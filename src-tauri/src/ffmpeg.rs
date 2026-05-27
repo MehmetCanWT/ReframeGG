@@ -33,6 +33,9 @@ pub struct Layer {
     pub mask_shape: Option<String>,
     #[serde(rename = "maskBase64")]
     pub mask_base64: Option<String>,
+    pub blur: Option<f32>,
+    pub brightness: Option<f32>,
+    pub contrast: Option<f32>,
 }
 
 #[derive(Clone, Serialize)]
@@ -151,11 +154,17 @@ pub fn run_reframer(
 
     // Base background setup
     if background_mode == "blur" {
-        // Blur background takes a 9:16 slice of input center (width = 1080 * input_h / 1920)
-        // For 16:9 input of 1080p, slice width is 608px
+        // Crop the background blur using the gameplay layer crop coordinates if available, to completely eliminate black letterboxes.
+        let mut bg_crop = String::new();
+        if let Some(gp) = layers.iter().find(|l| l.id == "layer_0") {
+            let crop = &gp.crop_area;
+            if crop.w > 0 && crop.h > 0 {
+                bg_crop = format!("crop={}:{}:{}:{},", crop.w, crop.h, crop.x, crop.y);
+            }
+        }
         filter_complex.push_str(&format!(
-            "[0:v]crop=608:1080:656:0,scale={}:{}[bg_scaled];[bg_scaled]boxblur=20:3[bg];",
-            out_w, out_h
+            "[0:v]{}scale={}:{}:force_original_aspect_ratio=increase,crop={}:{}[bg_scaled];[bg_scaled]boxblur=25:5[bg];",
+            bg_crop, out_w, out_h, out_w, out_h
         ));
     } else {
         // Black background
@@ -183,6 +192,19 @@ pub fn run_reframer(
             crop.w, crop.h, crop.x, crop.y,
             canvas.w, canvas.h
         );
+
+        // Apply blur, brightness, contrast if present
+        if let Some(blur_val) = layer.blur {
+            if blur_val > 0.0 {
+                layer_filter.push_str(&format!(",boxblur={}:3", blur_val));
+            }
+        }
+        let bri = layer.brightness.unwrap_or(1.0);
+        let con = layer.contrast.unwrap_or(1.0);
+        if bri != 1.0 || con != 1.0 {
+            let eq_bri = bri - 1.0;
+            layer_filter.push_str(&format!(",eq=brightness={}:contrast={}", eq_bri, con));
+        }
 
         // Process mask if available
         let mask_shape = layer.mask_shape.as_deref().unwrap_or("square");

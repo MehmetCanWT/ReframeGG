@@ -1,5 +1,6 @@
 export interface MaskShape {
   id: string;
+  name: string;
   type: "rect" | "circle" | "freeform";
   x: number;
   y: number;
@@ -23,6 +24,9 @@ export interface Layer {
   maskPoints?: { x: number; y: number }[]; // 0.0 to 1.0 percentages
   maskBase64?: string; // Used temporarily during render
   masks?: MaskShape[]; // Çoklu gelişmiş maskeler
+  blur?: number;
+  brightness?: number;
+  contrast?: number;
 }
 
 export interface Preset {

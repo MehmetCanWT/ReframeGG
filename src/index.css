@@ -1,0 +1,101 @@
+@import "tailwindcss";
+
+@layer base {
+  body {
+    background-color: #07080a;
+    color: #f5f6f8;
+    font-family: 'Outfit', 'Plus Jakarta Sans', system-ui, sans-serif;
+    overflow: hidden;
+    height: 100vh;
+    width: 100vw;
+  }
+}
+
+/* Custom premium range sliders for the timeline and settings */
+input[type="range"] {
+  -webkit-appearance: none;
+  appearance: none;
+  background: transparent;
+  cursor: pointer;
+}
+
+input[type="range"]:focus {
+  outline: none;
+}
+
+input[type="range"]::-webkit-slider-runnable-track {
+  background: rgba(255, 255, 255, 0.08);
+  height: 4px;
+  border-radius: 2px;
+}
+
+input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  margin-top: -5px; /* Centers thumb on the track */
+  background-color: #f5f6f8;
+  border: 2px solid #ea580c;
+  height: 14px;
+  width: 14px;
+  border-radius: 50%;
+  box-shadow: 0 0 8px rgba(234, 88, 12, 0.6);
+  transition: transform 0.15s;
+}
+
+input[type="range"]::-webkit-slider-thumb:hover {
+  transform: scale(1.2);
+}
+
+/* Scrollbar styles */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.16);
+}
+
+/* Double trim slider style helpers */
+.range-trim-start::-webkit-slider-thumb {
+  pointer-events: auto !important;
+}
+
+.range-trim-end::-webkit-slider-thumb {
+  pointer-events: auto !important;
+}
+
+/* React Flow custom styled panels */
+.react-flow__minimap {
+  background-color: #111318 !important;
+  border: 1px solid rgba(255, 255, 255, 0.08) !important;
+  border-radius: 8px;
+}
+
+.react-flow__controls-button {
+  background: #111318 !important;
+  color: #f5f6f8 !important;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08) !important;
+}
+
+.react-flow__controls-button:hover {
+  background: #171a21 !important;
+}
+
+.radial-menu {
+  animation: scaleIn 0.25s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+@keyframes scaleIn {
+  from { transform: scale(0.3); opacity: 0; }
+  to { transform: scale(1); opacity: 1; }
+}
