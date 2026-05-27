@@ -25,3 +25,6 @@ dist-ssr
 
 # Large Binaries
 src-tauri/binaries/
+
+# Example screenshots
+examples-ss/
