@@ -218,8 +218,8 @@ function FlowEditor({
           } else if (node.type === "transform") {
             transData = { ...transData, ...node.data };
           } else if (node.type === "mask") {
-            maskShape = (node.data.shape as string) || "square";
-            masksList = node.data.masks || [];
+            maskShape = ((node.data as any).shape as string) || "square";
+            masksList = ((node.data as any).masks as MaskShape[]) || [];
           }
 
           const upstreamEdge = edges.find(e => e.target === currentNodeId);
@@ -404,10 +404,11 @@ function FlowEditor({
                 ctx.drawImage(master, 0, 0, canvas.width, canvas.height);
               } 
               else if (node.type === "crop") {
-                const left = node.data.left || 0;
-                const top = node.data.top || 0;
-                const w = Math.max(1, 1920 - left - (node.data.right || 0));
-                const h = Math.max(1, 1080 - top - (node.data.bottom || 0));
+                const ndata = node.data as any;
+                const left = ndata.left || 0;
+                const top = ndata.top || 0;
+                const w = Math.max(1, 1920 - left - (ndata.right || 0));
+                const h = Math.max(1, 1080 - top - (ndata.bottom || 0));
                 ctx.drawImage(master, left * scaleX, top * scaleY, w * scaleX, h * scaleY, 0, 0, canvas.width, canvas.height);
               } 
               else if (node.type === "mask") {
@@ -415,7 +416,7 @@ function FlowEditor({
                 ctx.fillStyle = "#050505";
                 ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-                const activeMasks = node.data.masks || [];
+                const activeMasks = ((node.data as any).masks || []) as MaskShape[];
                 if (activeMasks.length > 0) {
                   activeMasks.forEach((m: any) => {
                     ctx.beginPath();
@@ -431,7 +432,7 @@ function FlowEditor({
                     }
                     ctx.clip();
                   });
-                } else if (node.data.shape === "circle") {
+                } else if ((node.data as any).shape === "circle") {
                   ctx.beginPath();
                   ctx.arc(canvas.width / 2, canvas.height / 2, Math.min(canvas.width, canvas.height) / 2, 0, Math.PI * 2);
                   ctx.clip();
