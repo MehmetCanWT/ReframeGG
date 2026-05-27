@@ -604,13 +604,432 @@ body {
   transform: translate(-50%, -50%) scale(1.2);
 }
 
-.timeline-trim-range {
-  position: absolute;
-  height: 100%;
-  background-color: rgba(0, 191, 255, 0.12);
-  border-left: 2px solid var(--accent-blue);
-  border-right: 2px solid var(--accent-blue);
+/* Advanced Compositor & Mask Editor Styling */
+.flow-editor-wrapper {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  width: 100vw;
+  background-color: #07080a;
 }
+
+.flow-header {
+  height: 60px;
+  background-color: #111318;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 24px;
+  box-shadow: 0 4px 20px rgba(0,0,0,0.3);
+  z-index: 100;
+}
+
+.preset-action-btn {
+  background: linear-gradient(135deg, rgba(138, 43, 226, 0.12) 0%, rgba(138, 43, 226, 0.04) 100%);
+  border: 1px solid var(--accent-purple);
+  color: #f5f6f8;
+  border-radius: 8px;
+  padding: 8px 16px;
+  font-family: var(--font-primary);
+  font-size: 0.85rem;
+  font-weight: 700;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  transition: var(--transition-smooth);
+}
+
+.preset-action-btn:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(138, 43, 226, 0.25);
+  background-color: rgba(138, 43, 226, 0.18);
+}
+
+.preset-action-btn.load-btn {
+  border-color: var(--accent-blue);
+  background: linear-gradient(135deg, rgba(0, 191, 255, 0.12) 0%, rgba(0, 191, 255, 0.04) 100%);
+}
+
+.preset-action-btn.load-btn:hover {
+  box-shadow: 0 4px 12px rgba(0, 191, 255, 0.25);
+  background-color: rgba(0, 191, 255, 0.18);
+}
+
+/* Radial Menu */
+.radial-menu {
+  width: 140px;
+  height: 140px;
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  animation: scaleIn 0.25s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.radial-center {
+  width: 32px;
+  height: 32px;
+  background-color: #171a21;
+  border: 2px solid rgba(255, 255, 255, 0.12);
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  z-index: 10;
+  box-shadow: 0 0 15px rgba(0,0,0,0.5);
+  transition: all 0.2s;
+  color: #949ca9;
+}
+
+.radial-center:hover {
+  background-color: var(--accent-red);
+  border-color: var(--accent-red);
+  color: white;
+  transform: scale(1.1);
+}
+
+.radial-item {
+  position: absolute;
+  width: 34px;
+  height: 34px;
+  background-color: rgba(17, 19, 24, 0.95);
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+  color: white;
+  z-index: 5;
+}
+
+.radial-item:hover {
+  transform: scale(1.2) !important;
+  background-color: white !important;
+  color: black !important;
+  box-shadow: 0 0 15px currentColor;
+}
+
+/* Complex Mask Editor Overlay */
+.mask-editor-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 2000;
+  background-color: #07080a;
+  display: flex;
+  flex-direction: column;
+  font-family: var(--font-primary);
+  animation: fadeIn 0.25s ease-out;
+}
+
+.mask-editor-header {
+  height: 60px;
+  background-color: #111318;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 24px;
+}
+
+.mask-bar-btn {
+  background: transparent;
+  border: 1px solid rgba(255,255,255,0.08);
+  color: #949ca9;
+  padding: 8px 14px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 0.85rem;
+  font-weight: 600;
+  transition: all 0.2s;
+}
+
+.mask-bar-btn:hover {
+  background-color: rgba(255,255,255,0.05);
+  color: white;
+  border-color: rgba(255,255,255,0.15);
+}
+
+.mask-bar-btn.discard:hover {
+  background-color: rgba(255, 51, 102, 0.1);
+  border-color: var(--accent-red);
+  color: var(--accent-red);
+}
+
+.mask-save-btn {
+  background: linear-gradient(135deg, #ec4899 0%, #a855f7 100%);
+  border: none;
+  color: white;
+  padding: 8px 18px;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 0.85rem;
+  font-weight: 700;
+  box-shadow: 0 4px 15px rgba(236, 72, 153, 0.35);
+  display: flex;
+  align-items: center;
+  transition: all 0.2s;
+}
+
+.mask-save-btn:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 6px 20px rgba(236, 72, 153, 0.5);
+  filter: brightness(1.1);
+}
+
+.mask-divider {
+  width: 1px;
+  height: 20px;
+  background-color: rgba(255,255,255,0.1);
+}
+
+.mask-editor-workspace {
+  flex: 1;
+  display: flex;
+  overflow: hidden;
+}
+
+/* Sol Araç Çubuğu */
+.mask-editor-toolbar {
+  width: 70px;
+  background-color: #111318;
+  border-right: 1px solid rgba(255, 255, 255, 0.08);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 20px 0;
+  gap: 16px;
+}
+
+.tool-btn {
+  width: 44px;
+  height: 44px;
+  background: transparent;
+  border: 1px solid rgba(255,255,255,0.06);
+  border-radius: 10px;
+  color: #949ca9;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  font-size: 9px;
+  font-weight: 600;
+  transition: all 0.2s;
+}
+
+.tool-btn:hover {
+  background-color: rgba(255,255,255,0.05);
+  color: white;
+  border-color: rgba(255,255,255,0.15);
+}
+
+.tool-btn.active {
+  background-color: rgba(236, 72, 153, 0.15);
+  border-color: #ec4899;
+  color: #ec4899;
+  box-shadow: 0 0 12px rgba(236, 72, 153, 0.25);
+}
+
+.tool-btn.add {
+  font-size: 8px;
+  border-color: rgba(0, 191, 255, 0.3);
+  color: var(--accent-blue);
+}
+
+.tool-btn.add:hover {
+  background-color: rgba(0, 191, 255, 0.1);
+  border-color: var(--accent-blue);
+}
+
+.tool-btn.add.circle {
+  border-color: rgba(236, 72, 153, 0.3);
+  color: #ec4899;
+}
+
+.tool-btn.add.circle:hover {
+  background-color: rgba(236, 72, 153, 0.1);
+  border-color: #ec4899;
+}
+
+/* Orta Çizim Alanı */
+.mask-editor-middle {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 30px;
+  position: relative;
+  background-color: rgba(7, 8, 10, 0.5);
+}
+
+.panel-title {
+  font-size: 0.75rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  color: #949ca9;
+  letter-spacing: 1px;
+  margin-bottom: 12px;
+  display: block;
+}
+
+.mask-canvas-container {
+  width: 100%;
+  max-width: 960px;
+  aspect-ratio: 16/9;
+  position: relative;
+  background-color: #000;
+  border-radius: 12px;
+  border: 1.5px solid rgba(255, 255, 255, 0.08);
+  overflow: hidden;
+  box-shadow: 0 20px 50px rgba(0,0,0,0.8);
+}
+
+.mask-editor-video-canvas {
+  width: 100%;
+  height: 100%;
+  display: block;
+  object-fit: contain;
+}
+
+.mask-editor-svg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: auto;
+  z-index: 10;
+}
+
+/* Sağ Panel */
+.mask-editor-sidebar {
+  width: 320px;
+  background-color: #111318;
+  border-left: 1px solid rgba(255, 255, 255, 0.08);
+  padding: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.mask-side-preview {
+  width: 100%;
+  aspect-ratio: 16/9;
+  background-color: #000;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  overflow: hidden;
+}
+
+.mask-editor-preview-canvas {
+  width: 100%;
+  height: 100%;
+  display: block;
+  object-fit: contain;
+}
+
+.mask-layers-list {
+  flex: 1;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-right: 4px;
+}
+
+.mask-layer-item {
+  background-color: rgba(23, 26, 33, 0.4);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 8px;
+  padding: 10px 14px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.mask-layer-item:hover {
+  background-color: rgba(23, 26, 33, 0.6);
+  border-color: rgba(255,255,255,0.12);
+}
+
+.mask-layer-item.active {
+  border-color: #ec4899;
+  background-color: rgba(236, 72, 153, 0.04);
+}
+
+.layer-badge {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+
+.layer-badge.rect {
+  background-color: var(--accent-blue);
+  box-shadow: 0 0 6px var(--accent-blue);
+}
+
+.layer-badge.circle {
+  background-color: #ec4899;
+  box-shadow: 0 0 6px #ec4899;
+}
+
+.mask-btn {
+  background: transparent;
+  border: 1px solid rgba(255,255,255,0.06);
+  color: #949ca9;
+  border-radius: 4px;
+  padding: 4px 8px;
+  font-size: 10px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.mask-btn:hover {
+  color: white;
+  background-color: rgba(255,255,255,0.05);
+}
+
+.mask-btn.active {
+  background-color: var(--accent-purple);
+  border-color: var(--accent-purple);
+  color: white;
+}
+
+.mask-btn.delete:hover {
+  background-color: rgba(255, 51, 102, 0.1);
+  border-color: var(--accent-red);
+  color: var(--accent-red);
+}
+
+.mask-settings-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.slider-label {
+  font-size: 11px;
+  color: #949ca9;
+  font-weight: 600;
+  margin-bottom: 6px;
+  display: block;
+}
+
+.mask-settings-panel input[type="range"] {
+  width: 100%;
+}
+
+@keyframes scaleIn {
+  from { transform: scale(0.9); opacity: 0; }
+  to { transform: scale(1); opacity: 1; }
+}
+
 
 /* Render Progress modal / overlay */
 .render-overlay {

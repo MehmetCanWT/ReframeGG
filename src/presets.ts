@@ -1,3 +1,17 @@
+export interface MaskShape {
+  id: string;
+  type: "rect" | "circle" | "freeform";
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  points?: { x: number; y: number }[];
+  opacity: number;
+  feather: number;
+  roundness: number;
+  subtractMode: boolean;
+}
+
 export interface Layer {
   id: string;
   label: string;
@@ -8,6 +22,7 @@ export interface Layer {
   maskShape?: "square" | "circle" | "freeform";
   maskPoints?: { x: number; y: number }[]; // 0.0 to 1.0 percentages
   maskBase64?: string; // Used temporarily during render
+  masks?: MaskShape[]; // Çoklu gelişmiş maskeler
 }
 
 export interface Preset {
