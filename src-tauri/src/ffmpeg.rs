@@ -1,0 +1,357 @@
+use std::process::{Command, Stdio};
+use std::io::{BufRead, BufReader};
+use std::path::{Path, PathBuf};
+use base64::{Engine as _, engine::general_purpose};
+use serde::{Deserialize, Serialize};
+use tauri::{AppHandle, Emitter, Manager};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+
+lazy_static::lazy_static! {
+    static ref CANCEL_FLAG: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Rect {
+    pub x: i32,
+    pub y: i32,
+    pub w: i32,
+    pub h: i32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Layer {
+    pub id: String,
+    pub label: String,
+    #[serde(rename = "cropArea")]
+    pub crop_area: Rect,
+    #[serde(rename = "canvasPos")]
+    pub canvas_pos: Rect,
+    pub locked: bool,
+    pub visible: bool,
+    #[serde(rename = "maskShape")]
+    pub mask_shape: Option<String>,
+    #[serde(rename = "maskBase64")]
+    pub mask_base64: Option<String>,
+}
+
+#[derive(Clone, Serialize)]
+struct ProgressPayload {
+    progress: f32,
+    status: String,
+}
+
+// Function to cancel active rendering
+pub fn set_cancel_render(cancel: bool) {
+    CANCEL_FLAG.store(cancel, Ordering::SeqCst);
+}
+
+// Check if ffmpeg is in path or resolves from the sidecar
+fn get_ffmpeg_path(app_handle: &AppHandle) -> PathBuf {
+    // Resolve sidecar path in Tauri v2
+    // If running in development, check sidecar in current exe's dir or tauri configured binaries.
+    // Otherwise fallback to system ffmpeg.
+    match app_handle.path().resource_dir() {
+        Ok(dir) => {
+            let sidecar_bin = dir.join("binaries").join("ffmpeg-x86_64-pc-windows-msvc.exe");
+            if sidecar_bin.exists() {
+                return sidecar_bin;
+            }
+        }
+        Err(_) => {}
+    }
+
+    // Direct folder fallback
+    let local_bin = PathBuf::from("src-tauri/binaries/ffmpeg-x86_64-pc-windows-msvc.exe");
+    if local_bin.exists() {
+        return local_bin;
+    }
+
+    PathBuf::from("ffmpeg")
+}
+
+pub fn probe_video_duration(ffmpeg_path: &Path, video_path: &str) -> f64 {
+    // We can use a lightweight ffprobe call or static ffmpeg command to get duration.
+    // E.g. ffmpeg -i video_path
+    let ffprobe_path = ffmpeg_path.to_string_lossy().replace("ffmpeg", "ffprobe");
+    let output = Command::new(&ffprobe_path)
+        .args(&[
+            "-v", "error",
+            "-show_entries", "format=duration",
+            "-of", "default=noprint_wrappers=1:nokey=1",
+            video_path,
+        ])
+        .output();
+
+    if let Ok(out) = output {
+        let text = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        if let Ok(duration) = text.parse::<f64>() {
+            return duration;
+        }
+    }
+
+    // Fallback if ffprobe isn't in sidecar: parse from ffmpeg error output
+    let output = Command::new(ffmpeg_path)
+        .args(&["-i", video_path])
+        .output();
+
+    if let Ok(out) = output {
+        let err_text = String::from_utf8_lossy(&out.stderr);
+        if let Some(pos) = err_text.find("Duration: ") {
+            let sub = &err_text[pos + 10..pos + 21]; // e.g. "00:00:10.50"
+            let parts: Vec<&str> = sub.split(':').collect();
+            if parts.len() == 3 {
+                let hrs: f64 = parts[0].parse().unwrap_or(0.0);
+                let mins: f64 = parts[1].parse().unwrap_or(0.0);
+                let secs: f64 = parts[2].parse().unwrap_or(0.0);
+                return hrs * 3600.0 + mins * 60.0 + secs;
+            }
+        }
+    }
+
+    10.0 // Default fallback
+}
+
+pub fn run_reframer(
+    app_handle: AppHandle,
+    video_path: String,
+    layers: Vec<Layer>,
+    trim_start: f64,
+    trim_end: f64,
+    output_res: String,
+    output_fps: i32,
+    background_mode: String,
+    use_gpu: bool,
+    output_ext: String,
+) -> Result<String, String> {
+    CANCEL_FLAG.store(false, Ordering::SeqCst);
+
+    let ffmpeg_path = get_ffmpeg_path(&app_handle);
+    let video_duration = trim_end - trim_start;
+
+    // Parse output dimensions (e.g. "1080x1920")
+    let dims: Vec<&str> = output_res.split('x').collect();
+    if dims.len() != 2 {
+        return Err("Geçersiz çıktı çözünürlüğü formatı!".to_string());
+    }
+    let out_w: i32 = dims[0].parse().unwrap_or(1080);
+    let out_h: i32 = dims[1].parse().unwrap_or(1920);
+
+    // Create output path in same directory
+    let input_path = Path::new(&video_path);
+    let parent = input_path.parent().unwrap_or_else(|| Path::new("."));
+    let stem = input_path.file_stem().unwrap_or_default().to_string_lossy();
+    let ext_clean = output_ext.trim_start_matches('.');
+    let output_file_path = parent.join(format!("{}_dikey_reframe.{}", stem, ext_clean));
+    let output_str = output_file_path.to_string_lossy().to_string();
+
+    // 1. Build FFMPEG Complex Filter Complex String
+    // We will scale everything based on target dimensions (out_w, out_h)
+    let mut filter_complex = String::new();
+
+    // Base background setup
+    if background_mode == "blur" {
+        // Blur background takes a 9:16 slice of input center (width = 1080 * input_h / 1920)
+        // For 16:9 input of 1080p, slice width is 608px
+        filter_complex.push_str(&format!(
+            "[0:v]crop=608:1080:656:0,scale={}:{}[bg_scaled];[bg_scaled]boxblur=20:3[bg];",
+            out_w, out_h
+        ));
+    } else {
+        // Black background
+        filter_complex.push_str(&format!(
+            "color=s={}x{}:c=black[bg];",
+            out_w, out_h
+        ));
+    }
+
+    // Process each visible layer
+    let visible_layers: Vec<&Layer> = layers.iter().filter(|l| l.visible).collect();
+    let mut last_overlay_label = "bg".to_string();
+    
+    // Track dynamic input files (mask PNGs)
+    let mut dynamic_inputs = Vec::new();
+    let mut current_input_idx = 1; // 0 is the main video
+
+    for (idx, layer) in visible_layers.iter().enumerate() {
+        let crop = &layer.crop_area;
+        let canvas = &layer.canvas_pos;
+        let layer_label = format!("layer_{}", idx);
+
+        let mut layer_filter = format!(
+            "[0:v]crop={}:{}:{}:{},scale={}:{}",
+            crop.w, crop.h, crop.x, crop.y,
+            canvas.w, canvas.h
+        );
+
+        // Process mask if available
+        let mask_shape = layer.mask_shape.as_deref().unwrap_or("square");
+        
+        if mask_shape == "circle" {
+            layer_filter.push_str(",format=yuva420p,geq=a='if(lte(hypot(X-W/2,Y-H/2),W/2),255,0)'");
+            filter_complex.push_str(&format!("{}[{}];", layer_filter, layer_label));
+        } else if mask_shape == "freeform" && layer.mask_base64.is_some() {
+            // Write base64 to temp PNG
+            let b64 = layer.mask_base64.as_ref().unwrap();
+            let mask_path = parent.join(format!("{}_mask_{}.png", stem, idx));
+            if let Ok(bytes) = general_purpose::STANDARD.decode(b64) {
+                let _ = std::fs::write(&mask_path, bytes);
+                dynamic_inputs.push(mask_path.to_string_lossy().to_string());
+                
+                // Add the mask overlay pipeline
+                // 1. the cropped video
+                filter_complex.push_str(&format!("{}[cropped_{}];", layer_filter, idx));
+                // 2. format mask and alphamerge
+                filter_complex.push_str(&format!(
+                    "[{}:v]format=rgba[mask_{}];[cropped_{}][mask_{}]alphamerge[{}];",
+                    current_input_idx, idx,
+                    idx, idx,
+                    layer_label
+                ));
+                current_input_idx += 1;
+            } else {
+                filter_complex.push_str(&format!("{}[{}];", layer_filter, layer_label));
+            }
+        } else {
+            filter_complex.push_str(&format!("{}[{}];", layer_filter, layer_label));
+        }
+
+        // Overlay onto current canvas
+        let next_overlay = format!("ov_{}", idx);
+        filter_complex.push_str(&format!(
+            "[{}][{}]overlay={}:{}[{}];",
+            last_overlay_label, layer_label,
+            canvas.x, canvas.y,
+            next_overlay
+        ));
+        last_overlay_label = next_overlay;
+    }
+
+    // The final video stream label is the last overlay label
+    let final_video_label = last_overlay_label;
+
+    // 2. Build Arguments
+    let mut args = vec![
+        "-y".to_string(),
+        "-ss".to_string(), trim_start.to_string(),
+        "-to".to_string(), trim_end.to_string(),
+        "-i".to_string(), video_path,
+    ];
+    
+    // Add dynamic mask inputs
+    for mask_input in dynamic_inputs {
+        args.push("-i".to_string());
+        args.push(mask_input);
+    }
+    
+    args.extend(vec![
+        "-filter_complex".to_string(), filter_complex,
+        "-map".to_string(), format!("[{}]", final_video_label),
+        "-map".to_string(), "0:a?".to_string(), // map audio if exists, optional
+    ]);
+
+    // Hardware Acceleration or CPU standard based on format
+    let is_webm = ext_clean == "webm";
+
+    if use_gpu {
+        if is_webm {
+            // WebM with GPU NVENC
+            args.extend(vec![
+                "-c:v".to_string(), "vp9_nvenc".to_string(),
+                "-b:v".to_string(), "6M".to_string(),
+            ]);
+        } else {
+            // H.264 MP4/MKV/MOV with GPU NVENC
+            args.extend(vec![
+                "-c:v".to_string(), "h264_nvenc".to_string(),
+                "-preset".to_string(), "p4".to_string(),
+                "-tune".to_string(), "hq".to_string(),
+                "-rc".to_string(), "cbr".to_string(),
+                "-b:v".to_string(), "6M".to_string(),
+            ]);
+        }
+    } else {
+        if is_webm {
+            // WebM standard CPU (libvpx-vp9)
+            args.extend(vec![
+                "-c:v".to_string(), "libvpx-vp9".to_string(),
+                "-crf".to_string(), "30".to_string(),
+                "-b:v".to_string(), "0".to_string(),
+            ]);
+        } else {
+            // standard CPU (libx264)
+            args.extend(vec![
+                "-c:v".to_string(), "libx264".to_string(),
+                "-preset".to_string(), "fast".to_string(),
+                "-crf".to_string(), "20".to_string(),
+            ]);
+        }
+    }
+
+    // Audio encoding fallback and framerate
+    let audio_codec = if is_webm { "libopus".to_string() } else { "aac".to_string() };
+
+    args.extend(vec![
+        "-c:a".to_string(), audio_codec,
+        "-b:a".to_string(), "192k".to_string(),
+        "-r".to_string(), output_fps.to_string(),
+        "-progress".to_string(), "pipe:1".to_string(), // print progress to stdout
+        output_str.clone(),
+    ]);
+
+    println!("Running FFmpeg: {} {:?}", ffmpeg_path.display(), args);
+
+    // 3. Spawn FFmpeg Process
+    let mut child = Command::new(&ffmpeg_path)
+        .args(&args)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("FFmpeg başlatılamadı: {}. Lütfen sidecar dosyasını kontrol edin.", e))?;
+
+    let stdout = child.stdout.take().ok_or("Stdout kanalı alınamadı")?;
+    let reader = BufReader::new(stdout);
+
+    // Read progress line-by-line
+    for line_result in reader.lines() {
+        if CANCEL_FLAG.load(Ordering::SeqCst) {
+            let _ = child.kill();
+            return Err("Kullanıcı tarafından iptal edildi.".to_string());
+        }
+
+        if let Ok(line) = line_result {
+            if line.starts_with("out_time_us=") {
+                let us_str = &line[12..];
+                if let Ok(us) = us_str.parse::<f64>() {
+                    let seconds = us / 1_000_000.0;
+                    let percentage = ((seconds / video_duration) * 100.0)
+                        .min(99.0) as f32; // Hold at 99% until file finishes writing
+                    
+                    let _ = app_handle.emit("render-progress", ProgressPayload {
+                        progress: percentage,
+                        status: format!("Kareler işleniyor: {:.1}s / {:.1}s", seconds, video_duration),
+                    });
+                }
+            }
+        }
+    }
+
+    // Wait for process completion
+    let status = child.wait().map_err(|e| e.to_string())?;
+
+    if status.success() {
+        let _ = app_handle.emit("render-progress", ProgressPayload {
+            progress: 100.0,
+            status: "Render tamamlandı!".to_string(),
+        });
+        Ok(output_str)
+    } else {
+        Err("FFmpeg render sırasında bir hata bildirdi.".to_string())
+    }
+}
+
+pub fn probe_duration(app_handle: AppHandle, video_path: String) -> f64 {
+    let ffmpeg_path = get_ffmpeg_path(&app_handle);
+    probe_video_duration(&ffmpeg_path, &video_path)
+}
+
