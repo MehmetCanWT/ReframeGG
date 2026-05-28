@@ -53,6 +53,25 @@ jobs:
         if: steps.check_release.outputs.exists == 'false'
         run: npm install
 
+      - name: Cache ffmpeg
+        if: steps.check_release.outputs.exists == 'false'
+        id: cache-ffmpeg
+        uses: actions/cache@v4
+        with:
+          path: src-tauri/binaries/ffmpeg-x86_64-pc-windows-msvc.exe
+          key: ffmpeg-windows-x86_64
+
+      - name: Download ffmpeg
+        if: steps.check_release.outputs.exists == 'false' && steps.cache-ffmpeg.outputs.cache-hit != 'true'
+        run: |
+          $url = "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip"
+          Invoke-WebRequest -Uri $url -OutFile ffmpeg.zip
+          Expand-Archive -Path ffmpeg.zip -DestinationPath ffmpeg-extracted
+          $ffmpegExe = Get-ChildItem -Path ffmpeg-extracted -Recurse -Filter "ffmpeg.exe" | Select-Object -First 1
+          New-Item -ItemType Directory -Force -Path "src-tauri\binaries"
+          Copy-Item $ffmpegExe.FullName -Destination "src-tauri\binaries\ffmpeg-x86_64-pc-windows-msvc.exe"
+        shell: pwsh
+
       - name: Build Tauri App
         if: steps.check_release.outputs.exists == 'false'
         run: npm run tauri build
