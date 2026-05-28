@@ -13,7 +13,7 @@ pub struct VideoInfo {
 #[tauri::command]
 fn select_video_file() -> Option<String> {
     let file = FileDialog::new()
-        .add_filter("Video Dosyaları", &["mp4", "mkv", "avi", "mov", "webm", "flv", "wmv", "m4v", "ts", "3gp"])
+        .add_filter("Video Files", &["mp4", "mkv", "avi", "mov", "webm", "flv", "wmv", "m4v", "ts", "3gp"])
         .pick_file();
     
     file.map(|path| path.to_string_lossy().to_string())
@@ -22,7 +22,7 @@ fn select_video_file() -> Option<String> {
 #[tauri::command]
 fn get_video_info(app_handle: AppHandle, path: String) -> Result<VideoInfo, String> {
     if !std::path::Path::new(&path).exists() {
-        return Err("Video dosyası bulunamadı!".to_string());
+        return Err("Video file not found!".to_string());
     }
 
     let duration = probe_duration(app_handle, path);

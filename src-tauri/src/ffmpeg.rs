@@ -133,19 +133,20 @@ pub fn run_reframer(
     let video_duration = trim_end - trim_start;
 
     // Parse output dimensions (e.g. "1080x1920")
-    let dims: Vec<&str> = output_res.split('x').collect();
-    if dims.len() != 2 {
-        return Err("Geçersiz çıktı çözünürlüğü formatı!".to_string());
+    let res_parts: Vec<&str> = output_res.split('x').collect();
+    if res_parts.len() != 2 {
+        return Err("Invalid output resolution format!".to_string());
     }
-    let out_w: i32 = dims[0].parse().unwrap_or(1080);
-    let out_h: i32 = dims[1].parse().unwrap_or(1920);
+
+    let out_w: i32 = res_parts[0].parse().unwrap_or(1080);
+    let out_h: i32 = res_parts[1].parse().unwrap_or(1920);
 
     // Create output path in same directory
     let input_path = Path::new(&video_path);
     let parent = input_path.parent().unwrap_or_else(|| Path::new("."));
     let stem = input_path.file_stem().unwrap_or_default().to_string_lossy();
     let ext_clean = output_ext.trim_start_matches('.');
-    let output_file_path = parent.join(format!("{}_dikey_reframe.{}", stem, ext_clean));
+    let output_file_path = parent.join(format!("{}_portrait_reframe.{}", stem, ext_clean));
     let output_str = output_file_path.to_string_lossy().to_string();
 
     // 1. Build FFMPEG Complex Filter Complex String
@@ -193,12 +194,19 @@ pub fn run_reframer(
             canvas.w, canvas.h
         );
 
-        // Apply blur, brightness, contrast if present
-        if let Some(blur_val) = layer.blur {
-            if blur_val > 0.0 {
-                layer_filter.push_str(&format!(",boxblur={}:3", blur_val));
+        // Process mask if available
+        let mask_shape = layer.mask_shape.as_deref().unwrap_or("square");
+        let is_censor = mask_shape == "censor" && layer.mask_base64.is_some();
+
+        // Apply blur globally ONLY if it is not a local censor blur layer
+        if !is_censor {
+            if let Some(blur_val) = layer.blur {
+                if blur_val > 0.0 {
+                    layer_filter.push_str(&format!(",boxblur={}:3", blur_val));
+                }
             }
         }
+
         let bri = layer.brightness.unwrap_or(1.0);
         let con = layer.contrast.unwrap_or(1.0);
         if bri != 1.0 || con != 1.0 {
@@ -206,9 +214,6 @@ pub fn run_reframer(
             layer_filter.push_str(&format!(",eq=brightness={}:contrast={}", eq_bri, con));
         }
 
-        // Process mask if available
-        let mask_shape = layer.mask_shape.as_deref().unwrap_or("square");
-        
         if mask_shape == "circle" {
             layer_filter.push_str(",format=yuva420p,geq=a='if(lte(hypot(X-W/2,Y-H/2),W/2),255,0)'");
             filter_complex.push_str(&format!("{}[{}];", layer_filter, layer_label));
@@ -231,6 +236,45 @@ pub fn run_reframer(
                     layer_label
                 ));
                 current_input_idx += 1;
+            } else {
+                filter_complex.push_str(&format!("{}[{}];", layer_filter, layer_label));
+            }
+        } else if mask_shape == "censor" && layer.mask_base64.is_some() {
+            // Write censor base64 to temp PNG
+            let b64 = layer.mask_base64.as_ref().unwrap();
+            let mask_path = parent.join(format!("{}_censor_{}.png", stem, idx));
+            if let Ok(bytes) = general_purpose::STANDARD.decode(b64) {
+                let _ = std::fs::write(&mask_path, bytes);
+                dynamic_inputs.push(mask_path.to_string_lossy().to_string());
+
+                // Define intermediate labels
+                let pre_split_lbl = format!("presplit_{}", idx);
+                let clean_lbl = format!("clean_{}", idx);
+                let to_blur_lbl = format!("toblur_{}", idx);
+                let blurred_lbl = format!("blurred_{}", idx);
+                let censor_lbl = format!("censor_{}", idx);
+
+                // 1. Output the clean scaled segment
+                filter_complex.push_str(&format!("{}[{}];", layer_filter, pre_split_lbl));
+                // 2. Split into clean and blur inputs
+                filter_complex.push_str(&format!("[{}]split[{}][{}];", pre_split_lbl, clean_lbl, to_blur_lbl));
+                // 3. Blur the target stream (defaulting to 20 if layer blur is not set)
+                let blur_val = layer.blur.unwrap_or(0.0);
+                let censor_blur_val = if blur_val > 0.0 { blur_val } else { 20.0 };
+                filter_complex.push_str(&format!("[{}]boxblur={}:3[{}];", to_blur_lbl, censor_blur_val, blurred_lbl));
+                // 4. Merge blurred stream with PNG censor alpha mask
+                filter_complex.push_str(&format!(
+                    "[{}:v]format=rgba[mask_{}];[{}][mask_{}]alphamerge[{}];",
+                    current_input_idx, idx,
+                    idx, idx,
+                    censor_lbl
+                ));
+                current_input_idx += 1;
+                // 5. Overlay censored pixels onto the clean scaled segment
+                filter_complex.push_str(&format!(
+                    "[{}][{}]overlay=0:0[{}];",
+                    clean_lbl, censor_lbl, layer_label
+                ));
             } else {
                 filter_complex.push_str(&format!("{}[{}];", layer_filter, layer_label));
             }
@@ -329,16 +373,16 @@ pub fn run_reframer(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .map_err(|e| format!("FFmpeg başlatılamadı: {}. Lütfen sidecar dosyasını kontrol edin.", e))?;
+        .map_err(|e| format!("Could not start FFmpeg: {}. Please check sidecar file.", e))?;
 
-    let stdout = child.stdout.take().ok_or("Stdout kanalı alınamadı")?;
+    let stdout = child.stdout.take().ok_or("Could not take stdout channel")?;
     let reader = BufReader::new(stdout);
 
     // Read progress line-by-line
     for line_result in reader.lines() {
         if CANCEL_FLAG.load(Ordering::SeqCst) {
             let _ = child.kill();
-            return Err("Kullanıcı tarafından iptal edildi.".to_string());
+            return Err("Cancelled by user.".to_string());
         }
 
         if let Ok(line) = line_result {
@@ -351,7 +395,7 @@ pub fn run_reframer(
                     
                     let _ = app_handle.emit("render-progress", ProgressPayload {
                         progress: percentage,
-                        status: format!("Kareler işleniyor: {:.1}s / {:.1}s", seconds, video_duration),
+                        status: format!("Processing frames: {:.1}s / {:.1}s", seconds, video_duration),
                     });
                 }
             }
@@ -360,17 +404,17 @@ pub fn run_reframer(
 
     // Wait for process completion
     let status = child.wait().map_err(|e| e.to_string())?;
-
     if status.success() {
         let _ = app_handle.emit("render-progress", ProgressPayload {
             progress: 100.0,
-            status: "Render tamamlandı!".to_string(),
+            status: "Render complete!".to_string(),
         });
         Ok(output_str)
     } else {
-        Err("FFmpeg render sırasında bir hata bildirdi.".to_string())
+        Err("FFmpeg reported an error during render.".to_string())
     }
-}
+    }
+
 
 pub fn probe_duration(app_handle: AppHandle, video_path: String) -> f64 {
     let ffmpeg_path = get_ffmpeg_path(&app_handle);

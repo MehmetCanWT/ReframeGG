@@ -1,101 +1,46 @@
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { Layer, MaskShape, defaultPresets } from "../presets";
-import {
+import { convertFileSrc } from "@tauri-apps/api/core";
+import { 
   Play, Pause, Sparkles, Image as ImageIcon, Crop, Scissors,
-  Save, FolderOpen, Check, Grid, ChevronDown
+  FolderOpen, Trash2, Eye, EyeOff, Sliders, Layers
 } from "lucide-react";
-import {
-  ReactFlow,
-  Background,
-  Controls,
-  MiniMap,
-  applyNodeChanges,
-  applyEdgeChanges,
-  addEdge,
-  Node,
-  Edge,
-  NodeChange,
-  EdgeChange,
-  Connection
-} from "@xyflow/react";
-import "@xyflow/react/dist/style.css";
-import { nodeTypes } from "../nodes";
-import { OutputPreview } from "./OutputPreview";
+import { Layer, MaskShape, Preset, defaultPresets } from "../presets";
 import { VideoScrubber } from "./VideoScrubber";
-import { MaskStudio } from "./MaskStudio";
 
-const BLEND_PORTS_MAPPING: Record<string, string> = {
-  "layer_0": "Main Video",
-  "layer_1": "Minimap",
-  "layer_2": "Killfeed",
-  "layer_3": "My Team",
-  "layer_4": "Enemies",
-  "layer_5": "Health",
-  "layer_6": "Ammo",
-  "layer_7": "Timer"
-};
+// ─── TYPES & INTERFACES ───
+export interface ReframeLayer {
+  id: string;
+  name: string;
+  type: "crop" | "mask";
+  visible: boolean;
+  
+  // Crop area on the 16:9 source (1920x1080 pixel coordinates)
+  cropArea: { x: number; y: number; w: number; h: number };
+  
+  // Canvas output coordinates on the 1080x1920 portrait canvas
+  x: number;
+  y: number;
+  scale: number;
+  baseScale?: number;
+  rotation: number;
+  
+  // Effects & feathering
+  blur: number;
+  brightness: number;
+  contrast: number;
+  opacity: number;
+  feather: number;
+  roundness: number;
+  
+  // Individual mask shape list (if type is mask)
+  masks: MaskShape[];
+}
 
+const CANVAS_W = 1920;
+const CANVAS_H = 1080;
 
-
-const drawImageCover = (ctx: CanvasRenderingContext2D, img: HTMLVideoElement, x: number, y: number, w: number, h: number) => {
-  const imgW = img.videoWidth || img.width;
-  const imgH = img.videoHeight || img.height;
-  if (!imgW || !imgH) return;
-
-  const imgAspect = imgW / imgH;
-  const targetAspect = w / h;
-
-  let srcX = 0, srcY = 0, srcW = imgW, srcH = imgH;
-
-  if (imgAspect > targetAspect) {
-    srcW = imgH * targetAspect;
-    srcX = (imgW - srcW) / 2;
-  } else {
-    srcH = imgW / targetAspect;
-    srcY = (imgH - srcH) / 2;
-  }
-
-  ctx.drawImage(img, srcX, srcY, srcW, srcH, x, y, w, h);
-};
-
-const findNextFreeOutputPort = (nodes: Node[], edges: Edge[]) => {
-  const outputNode = nodes.find(n => n.type === "output");
-  if (!outputNode) return null;
-
-  for (let i = 0; i < 9; i++) {
-    const portId = `layer_${i}`;
-    const isConnected = edges.some(e => e.target === outputNode.id && e.targetHandle === portId);
-    if (!isConnected) {
-      return portId;
-    }
-  }
-  return null;
-};
-
-const traceDownstreamToBlendPort = (nodeId: string, edges: Edge[], nodes: Node[]): string | null => {
-  let currentId: string | null = nodeId;
-  let currentHandle: string | null = null;
-
-  while (currentId) {
-    const edge = edges.find(e => e.source === currentId);
-    if (!edge) break;
-
-    const targetNode = nodes.find(n => n.id === edge.target);
-    if (!targetNode) break;
-
-    if (targetNode.type === "output") {
-      currentHandle = edge.targetHandle || null;
-      break;
-    }
-
-    currentId = targetNode.id;
-  }
-
-  return currentHandle;
-};
-
-// Persistent offscreen canvas cache (reused across frames, no GC pressure)
+// Persistent offscreen canvas cache to prevent GC stuttering at 60 FPS
 const _offscreenCache = new Map<string, HTMLCanvasElement>();
 const getOffscreen = (key: string, w: number, h: number): HTMLCanvasElement => {
   let c = _offscreenCache.get(key);
@@ -107,12 +52,11 @@ const getOffscreen = (key: string, w: number, h: number): HTMLCanvasElement => {
   return c;
 };
 
-// Draw a mask layer into a canvas of size (width x height).
-// maskX/Y/W/H are in 1920×1080 source space.
+// ─── HIGH PERFORMANCE RENDER HELPERS ───
 const drawLayerWithFeather = (
   ctx: CanvasRenderingContext2D,
   master: HTMLVideoElement,
-  layer: Layer,
+  layer: ReframeLayer,
   width: number,
   height: number
 ) => {
@@ -120,46 +64,55 @@ const drawLayerWithFeather = (
   const vH = master.videoHeight;
   if (!vW || !vH) return;
 
-  // Scale from source 1920×1080 space → video pixel space
   const svX = vW / 1920;
   const svY = vH / 1080;
 
   ctx.clearRect(0, 0, width, height);
 
-  if (layer.masks && layer.masks.length > 0) {
+  if (layer.type === "mask" && layer.masks && layer.masks.length > 0) {
+    const crop = layer.cropArea || { x: 0, y: 0, w: 1920, h: 1080 };
+    
+    // Draw the cropped source video fully blurred/filtered once
+    const blurredC = getOffscreen(`blurred_${layer.id}`, width, height);
+    const blurredCtx = blurredC.getContext("2d")!;
+    blurredCtx.clearRect(0, 0, width, height);
+    blurredCtx.save();
+    blurredCtx.filter = `blur(${layer.blur}px) brightness(${layer.brightness}) contrast(${layer.contrast})`;
+    blurredCtx.drawImage(
+      master, 
+      crop.x * svX, crop.y * svY, 
+      crop.w * svX, crop.h * svY, 
+      0, 0, width, height
+    );
+    blurredCtx.restore();
+
     layer.masks.forEach((m, mi) => {
-      // Offscreen mask alpha channel
       const maskC = getOffscreen(`mask_${layer.id}_${mi}`, width, height);
       const maskCtx = maskC.getContext("2d")!;
       maskCtx.clearRect(0, 0, width, height);
       maskCtx.fillStyle = "white";
       maskCtx.beginPath();
 
+      const mx = ((m.x - crop.x) / crop.w) * width;
+      const my = ((m.y - crop.y) / crop.h) * height;
+      const mw = (m.w / crop.w) * width;
+      const mh = (m.h / crop.h) * height;
+
       if (m.type === "circle") {
-        // Position mask in canvas coords
-        const mx = (m.x / 1920) * width;
-        const my = (m.y / 1080) * height;
-        const mw = (m.w / 1920) * width;
-        const mh = (m.h / 1080) * height;
         maskCtx.ellipse(mx + mw / 2, my + mh / 2, mw / 2, mh / 2, 0, 0, Math.PI * 2);
       } else if (m.type === "freeform" && m.points && m.points.length > 0) {
         m.points.forEach((p, pidx) => {
-          const px = (p.x / 1920) * width;
-          const py = (p.y / 1080) * height;
+          const px = ((p.x - crop.x) / crop.w) * width;
+          const py = ((p.y - crop.y) / crop.h) * height;
           if (pidx === 0) maskCtx.moveTo(px, py);
           else maskCtx.lineTo(px, py);
         });
         maskCtx.closePath();
       } else {
-        const mx = (m.x / 1920) * width;
-        const my = (m.y / 1080) * height;
-        const mw = (m.w / 1920) * width;
-        const mh = (m.h / 1080) * height;
         maskCtx.rect(mx, my, mw, mh);
       }
       maskCtx.fill();
 
-      // Feathering: blur the mask alpha
       const featherVal = m.feather ?? 0;
       if (featherVal > 0) {
         const blurPx = Math.max(0.5, featherVal * (width / 1920));
@@ -173,117 +126,129 @@ const drawLayerWithFeather = (
         maskCtx.drawImage(blurC, 0, 0);
       }
 
-      // Composite video onto mask
+      // Cut out the fully blurred canvas using source-in GCO
       maskCtx.save();
       maskCtx.globalCompositeOperation = "source-in";
-      const fStr = `blur(${layer.blur || 0}px) brightness(${layer.brightness ?? 1}) contrast(${layer.contrast ?? 1})`;
-      maskCtx.filter = fStr;
-      if (m.type === "freeform") {
-        // Full frame for freeform
-        maskCtx.drawImage(master, 0, 0, vW, vH, 0, 0, width, height);
-      } else {
-        // Crop from source region
-        maskCtx.drawImage(master, m.x * svX, m.y * svY, m.w * svX, m.h * svY, (m.x / 1920) * width, (m.y / 1080) * height, (m.w / 1920) * width, (m.h / 1080) * height);
-      }
-      maskCtx.filter = "none";
+      maskCtx.drawImage(blurredC, 0, 0);
       maskCtx.restore();
 
+      ctx.save();
       ctx.globalAlpha = m.opacity ?? 1;
       ctx.drawImage(maskC, 0, 0);
-      ctx.globalAlpha = 1;
+      ctx.restore();
     });
   } else {
+    // layer.type === "crop"
+    const hasCensorMasks = layer.masks && layer.masks.length > 0;
+    const globalBlur = hasCensorMasks ? 0 : layer.blur;
+
     ctx.save();
-    if (layer.maskShape === "circle") {
-      ctx.beginPath();
-      ctx.arc(width / 2, height / 2, Math.min(width, height) / 2, 0, Math.PI * 2);
-      ctx.clip();
-    }
-    ctx.filter = `blur(${layer.blur || 0}px) brightness(${layer.brightness ?? 1}) contrast(${layer.contrast ?? 1})`;
-    ctx.drawImage(master, layer.cropArea.x * svX, layer.cropArea.y * svY, layer.cropArea.w * svX, layer.cropArea.h * svY, 0, 0, width, height);
+    ctx.filter = `blur(${globalBlur}px) brightness(${layer.brightness}) contrast(${layer.contrast})`;
+    ctx.drawImage(
+      master, 
+      layer.cropArea.x * svX, layer.cropArea.y * svY, 
+      layer.cropArea.w * svX, layer.cropArea.h * svY, 
+      0, 0, width, height
+    );
     ctx.filter = "none";
     ctx.restore();
+
+    // If there are censor masks, draw blurred censor regions on top
+    if (hasCensorMasks) {
+      const crop = layer.cropArea;
+      const blurredC = getOffscreen(`blurred_censor_${layer.id}`, width, height);
+      const blurredCtx = blurredC.getContext("2d")!;
+      blurredCtx.clearRect(0, 0, width, height);
+      blurredCtx.save();
+      // Default to 20px if layer.blur is 0
+      const censorBlur = layer.blur > 0 ? layer.blur : 20;
+      blurredCtx.filter = `blur(${censorBlur}px) brightness(${layer.brightness}) contrast(${layer.contrast})`;
+      blurredCtx.drawImage(
+        master, 
+        crop.x * svX, crop.y * svY, 
+        crop.w * svX, crop.h * svY, 
+        0, 0, width, height
+      );
+      blurredCtx.restore();
+
+      layer.masks.forEach((m, mi) => {
+        const maskC = getOffscreen(`mask_censor_${layer.id}_${mi}`, width, height);
+        const maskCtx = maskC.getContext("2d")!;
+        maskCtx.clearRect(0, 0, width, height);
+        // Fully transparent background
+        maskCtx.clearRect(0, 0, width, height);
+        maskCtx.fillStyle = "white";
+        maskCtx.beginPath();
+
+        const mx = ((m.x - crop.x) / crop.w) * width;
+        const my = ((m.y - crop.y) / crop.h) * height;
+        const mw = (m.w / crop.w) * width;
+        const mh = (m.h / crop.h) * height;
+
+        if (m.type === "circle") {
+          maskCtx.ellipse(mx + mw / 2, my + mh / 2, mw / 2, mh / 2, 0, 0, Math.PI * 2);
+        } else if (m.type === "freeform" && m.points && m.points.length > 0) {
+          m.points.forEach((p, pidx) => {
+            const px = ((p.x - crop.x) / crop.w) * width;
+            const py = ((p.y - crop.y) / crop.h) * height;
+            if (pidx === 0) maskCtx.moveTo(px, py);
+            else maskCtx.lineTo(px, py);
+          });
+          maskCtx.closePath();
+        } else {
+          maskCtx.rect(mx, my, mw, mh);
+        }
+        maskCtx.fill();
+
+        const featherVal = m.feather ?? 0;
+        if (featherVal > 0) {
+          const blurPx = Math.max(0.5, featherVal * (width / 1920));
+          const blurC = getOffscreen(`blur_censor_${layer.id}_${mi}`, width, height);
+          const blurCtx = blurC.getContext("2d")!;
+          blurCtx.clearRect(0, 0, width, height);
+          blurCtx.filter = `blur(${blurPx}px)`;
+          blurCtx.drawImage(maskC, 0, 0);
+          blurCtx.filter = "none";
+          maskCtx.clearRect(0, 0, width, height);
+          maskCtx.drawImage(blurC, 0, 0);
+        }
+
+        // Apply source-in to keep only the blurred pixels inside mask shapes
+        maskCtx.save();
+        maskCtx.globalCompositeOperation = "source-in";
+        maskCtx.drawImage(blurredC, 0, 0);
+        maskCtx.restore();
+
+        ctx.save();
+        ctx.globalAlpha = m.opacity ?? 1;
+        ctx.drawImage(maskC, 0, 0);
+        ctx.restore();
+      });
+    }
   }
 };
 
-// Draw a compiled layer at a specific destination rect on a shared canvas
-const drawLayerOnSharedCanvas = (
-  ctx: CanvasRenderingContext2D,
-  master: HTMLVideoElement,
-  layer: Layer,
-  px: number, py: number, pw: number, ph: number
-) => {
-  const vW = master.videoWidth;
-  const vH = master.videoHeight;
-  if (!vW || !vH || pw <= 0 || ph <= 0) return;
-  const svX = vW / 1920, svY = vH / 1080;
-
-  if (layer.masks && layer.masks.length > 0) {
-    layer.masks.forEach((m, mi) => {
-      const maskC = getOffscreen(`shared_mask_${layer.id}_${mi}`, Math.ceil(pw), Math.ceil(ph));
-      const maskCtx = maskC.getContext("2d")!;
-      maskCtx.clearRect(0, 0, pw, ph);
-      maskCtx.fillStyle = "white";
-      maskCtx.beginPath();
-
-      if (m.type === "circle") {
-        const mx = (m.x / 1920) * pw, my = (m.y / 1080) * ph;
-        const mw = (m.w / 1920) * pw, mh = (m.h / 1080) * ph;
-        maskCtx.ellipse(mx + mw / 2, my + mh / 2, mw / 2, mh / 2, 0, 0, Math.PI * 2);
-      } else if (m.type === "freeform" && m.points && m.points.length > 0) {
-        m.points.forEach((p, pidx) => {
-          const rx = (p.x / 1920) * pw, ry = (p.y / 1080) * ph;
-          if (pidx === 0) maskCtx.moveTo(rx, ry); else maskCtx.lineTo(rx, ry);
-        });
-        maskCtx.closePath();
-      } else {
-        const mx = (m.x / 1920) * pw, my = (m.y / 1080) * ph;
-        const mw = (m.w / 1920) * pw, mh = (m.h / 1080) * ph;
-        maskCtx.rect(mx, my, mw, mh);
-      }
-      maskCtx.fill();
-
-      const featherVal = m.feather ?? 0;
-      if (featherVal > 0) {
-        const blurPx = Math.max(0.5, featherVal * (pw / 1920));
-        const blurC = getOffscreen(`shared_blur_${layer.id}_${mi}`, Math.ceil(pw), Math.ceil(ph));
-        const blurCtx = blurC.getContext("2d")!;
-        blurCtx.clearRect(0, 0, pw, ph);
-        blurCtx.filter = `blur(${blurPx}px)`;
-        blurCtx.drawImage(maskC, 0, 0);
-        blurCtx.filter = "none";
-        maskCtx.clearRect(0, 0, pw, ph);
-        maskCtx.drawImage(blurC, 0, 0);
-      }
-
-      maskCtx.save();
-      maskCtx.globalCompositeOperation = "source-in";
-      maskCtx.filter = `blur(${layer.blur || 0}px) brightness(${layer.brightness ?? 1}) contrast(${layer.contrast ?? 1})`;
-      if (m.type === "freeform") {
-        maskCtx.drawImage(master, 0, 0, vW, vH, 0, 0, pw, ph);
-      } else {
-        maskCtx.drawImage(master, m.x * svX, m.y * svY, m.w * svX, m.h * svY, (m.x / 1920) * pw, (m.y / 1080) * ph, (m.w / 1920) * pw, (m.h / 1080) * ph);
-      }
-      maskCtx.filter = "none";
-      maskCtx.restore();
-
-      ctx.globalAlpha = m.opacity ?? 1;
-      ctx.drawImage(maskC, px, py);
-      ctx.globalAlpha = 1;
-    });
-  } else {
-    ctx.save();
-    if (layer.maskShape === "circle") {
-      ctx.beginPath();
-      ctx.arc(px + pw / 2, py + ph / 2, Math.min(pw, ph) / 2, 0, Math.PI * 2);
-      ctx.clip();
-    }
-    ctx.filter = `blur(${layer.blur || 0}px) brightness(${layer.brightness ?? 1}) contrast(${layer.contrast ?? 1})`;
-    ctx.drawImage(master, layer.cropArea.x * svX, layer.cropArea.y * svY, layer.cropArea.w * svX, layer.cropArea.h * svY, px, py, pw, ph);
-    ctx.filter = "none";
-    ctx.restore();
+const defaultInitialLayers = (): ReframeLayer[] => [
+  {
+    id: "layer_0",
+    name: "Layer 1 (Main View)",
+    type: "crop",
+    visible: true,
+    cropArea: { x: 0, y: 0, w: 1920, h: 1080 },
+    x: 0,
+    y: 420,
+    scale: 0.5625,
+    baseScale: 0.5625,
+    rotation: 0,
+    blur: 0,
+    brightness: 1.0,
+    contrast: 1.0,
+    opacity: 1.0,
+    feather: 0,
+    roundness: 0,
+    masks: []
   }
-};
+];
 
 export function FlowEditor({
   videoPath, videoName, duration,
@@ -291,1225 +256,1763 @@ export function FlowEditor({
   masterVideoRef, trimStart, trimEnd, setTrimStart, setTrimEnd, setCurrentTime
 }: any) {
 
-  // Graph State
-  const [nodes, setNodes] = useState<Node[]>([]);
-  const [edges, setEdges] = useState<Edge[]>([]);
-  const reactFlowInstance = useRef<any>(null);
+  // ─── WORKSPACE PANELS RESIZING STATE ───
+  const [panelWidths, setPanelWidths] = useState({ left: 35, middle: 30 }); // percent
+  const isResizingLeft = useRef(false);
+  const isResizingRight = useRef(false);
+  const [footerHeight, setFooterHeight] = useState(280);
+  const isResizingFooter = useRef(false);
 
-  // Undo/Redo history
-  const [history, setHistory] = useState<{ nodes: Node[], edges: Edge[] }[]>([]);
-  const [historyIndex, setHistoryIndex] = useState(-1);
+  // ─── LAYERS & WORKSPACE STATE ───
+  const [layers, setLayers] = useState<ReframeLayer[]>(defaultInitialLayers());
+  const [selectedLayerId, setSelectedLayerId] = useState<string>("layer_0");
+  const selectedLayer = layers.find(l => l.id === selectedLayerId) || layers[0];
 
-  const saveHistory = useCallback((nds: Node[], eds: Edge[]) => {
-    setHistory(prev => {
-      const next = prev.slice(0, historyIndex + 1);
-      next.push({ nodes: JSON.parse(JSON.stringify(nds)), edges: JSON.parse(JSON.stringify(eds)) });
-      return next.slice(-20); // Keep last 20 states
+  // ─── MODAL & NOTIFICATION STATE ───
+  const [modal, setModal] = useState<{
+    type: "alert" | "confirm" | "prompt";
+    title: string;
+    message: string;
+    defaultValue?: string;
+    onConfirm?: (val?: string) => void;
+    onCancel?: () => void;
+  } | null>(null);
+
+  const showModal = (type: "alert" | "confirm" | "prompt", title: string, message: string, defaultValue?: string): Promise<string | boolean> => {
+    return new Promise((resolve) => {
+      setModal({
+        type,
+        title,
+        message,
+        defaultValue,
+        onConfirm: (val) => {
+          setModal(null);
+          resolve(type === "prompt" ? val || "" : true);
+        },
+        onCancel: () => {
+          setModal(null);
+          resolve(false);
+        }
+      });
     });
-    setHistoryIndex(prev => Math.min(19, prev + 1));
-  }, [historyIndex]);
-
-  const undo = () => {
-    if (historyIndex > 0) {
-      const state = history[historyIndex - 1];
-      setNodes(state.nodes);
-      setEdges(state.edges);
-      setHistoryIndex(historyIndex - 1);
-    }
   };
 
-  const redo = () => {
-    if (historyIndex < history.length - 1) {
-      const state = history[historyIndex + 1];
-      setNodes(state.nodes);
-      setEdges(state.edges);
-      setHistoryIndex(historyIndex + 1);
+  // ─── SNAPPING HELPER ───
+  const snapValue = (val: number, targets: number[], threshold: number = 30) => {
+    for (const target of targets) {
+      if (Math.abs(val - target) < threshold) return target;
     }
+    return val;
   };
 
-  // Keyboard shortcuts for graph undo/redo
+  // ─── EDITOR / MASK DRAWING MODES ───
+  const [editorTool, setEditorTool] = useState<"select" | "rect" | "circle" | "freeform">("select");
+  const [mouseHoverPos, setMouseHoverPos] = useState<{ x: number, y: number } | null>(null);
+  
+  // Game Detected Modal states
+  const [showGameDetectedModal, setShowGameDetectedModal] = useState(false);
+  const [detectedGameName, setDetectedGameName] = useState("");
+  const [detectedPreset, setDetectedPreset] = useState<Preset | null>(null);
+
+  // Preset Selection Modal
+  const [showPresetLibrary, setShowPresetLibrary] = useState(false);
+  const [customPresets, setCustomPresets] = useState<Preset[]>([]);
+
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem("reframe_custom_presets");
+      if (saved) {
+        setCustomPresets(JSON.parse(saved));
+      }
+    } catch (e) {
+      console.error("Error loading custom presets:", e);
+    }
+  }, []);
+
+  const handleSaveCustomPreset = useCallback((name: string) => {
+    if (!name.trim()) return;
+
+    const layersToSave: Layer[] = layers.map((l) => {
+      const layerScale = l.scale;
+      const w = Math.round(l.cropArea.w * layerScale);
+      const h = Math.round(l.cropArea.h * layerScale);
+      return {
+        id: l.id,
+        label: l.name,
+        cropArea: { ...l.cropArea },
+        canvasPos: { x: l.x, y: l.y, w, h },
+        locked: false,
+        visible: l.visible,
+        maskShape: l.type === "mask" ? (l.masks?.[0]?.type === "circle" ? "circle" : "freeform") : "square",
+        masks: l.masks,
+        blur: l.blur,
+        brightness: l.brightness,
+        contrast: l.contrast
+      };
+    });
+
+    const newPreset: Preset = {
+      game: "Custom",
+      presetName: name,
+      sourceResolution: { w: 1920, h: 1080 },
+      layers: layersToSave
+    };
+
+    const updated = [...customPresets, newPreset];
+    setCustomPresets(updated);
+    localStorage.setItem("reframe_custom_presets", JSON.stringify(updated));
+    showModal("alert", "Success", `"${name}" preset successfully saved!`);
+  }, [layers, customPresets]);
+
+  const handleDeleteCustomPreset = useCallback(async (presetName: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    const confirmed = await showModal("confirm", "Delete Preset", `Are you sure you want to delete the "${presetName}" preset?`);
+    if (!confirmed) return;
+    const updated = customPresets.filter(p => p.presetName !== presetName);
+    setCustomPresets(updated);
+    localStorage.setItem("reframe_custom_presets", JSON.stringify(updated));
+  }, [customPresets]);
+
+  // ─── PANELS RESIZING HANDLERS ───
+  const handleMouseDownLeftDivider = () => { isResizingLeft.current = true; };
+  const handleMouseDownRightDivider = () => { isResizingRight.current = true; };
+  const handleMouseDownFooterDivider = () => { isResizingFooter.current = true; };
+
+  useEffect(() => {
+    const handleMouseMove = (e: MouseEvent) => {
+      const w = window.innerWidth;
+      const h = window.innerHeight;
+      if (isResizingLeft.current) {
+        const leftPercent = Math.max(15, Math.min(60, (e.clientX / w) * 100));
+        setPanelWidths(prev => ({ ...prev, left: leftPercent }));
+      } else if (isResizingRight.current) {
+        const remainingW = w - e.clientX;
+        const middlePercent = Math.max(15, Math.min(60, ((w - (panelWidths.left * w / 100) - remainingW) / w) * 100));
+        setPanelWidths(prev => ({ ...prev, middle: middlePercent }));
+      } else if (isResizingFooter.current) {
+        const remainingHeight = h - e.clientY;
+        const newHeight = Math.max(150, Math.min(600, remainingHeight));
+        setFooterHeight(newHeight);
+      }
+    };
+
+    const handleMouseUp = () => {
+      isResizingLeft.current = false;
+      isResizingRight.current = false;
+      isResizingFooter.current = false;
+    };
+
+    window.addEventListener("mousemove", handleMouseMove);
+    window.addEventListener("mouseup", handleMouseUp);
+    return () => {
+      window.removeEventListener("mousemove", handleMouseMove);
+      window.removeEventListener("mouseup", handleMouseUp);
+    };
+  }, [panelWidths.left]);
+
+  // ─── AUTOMATIC GAME DETECTION ON VIDEO LOAD ───
+  const lastDetectedVideoPathRef = useRef("");
+  useEffect(() => {
+    if (videoPath && videoPath !== lastDetectedVideoPathRef.current) {
+      lastDetectedVideoPathRef.current = videoPath;
+
+      // Start fresh with clean full-screen vertical layout
+      setLayers(defaultInitialLayers());
+      setSelectedLayerId("layer_0");
+
+      const lowerName = videoName.toLowerCase();
+      let matchedGame = "";
+      let matchedPreset: Preset | null = null;
+
+      // Detect based on resolution and filename
+      const video = masterVideoRef.current;
+      const is2K = video && (video.videoWidth > 2000 || video.videoHeight > 1200);
+
+      if (lowerName.includes("valorant")) {
+        matchedGame = "Valorant";
+        matchedPreset = is2K ? defaultPresets[0] : defaultPresets[1];
+      }
+
+      if (matchedGame && matchedPreset) {
+        setDetectedGameName(matchedGame);
+        setDetectedPreset(matchedPreset);
+        setShowGameDetectedModal(true);
+      }
+    }
+  }, [videoPath, videoName]);
+
+  // ─── APPLY PRESET UTILITY ───
+  const applyPreset = useCallback((preset: Preset) => {
+    const newLayersList: ReframeLayer[] = preset.layers.map((layer, idx) => {
+      const type = (layer.maskShape === "circle" || layer.maskShape === "freeform") ? "mask" : "crop";
+      
+      const masks: MaskShape[] = type === "mask" ? [
+        {
+          id: `mask_preset_${idx}`,
+          name: layer.label,
+          type: layer.maskShape === "circle" ? "circle" : "freeform",
+          x: layer.cropArea.x,
+          y: layer.cropArea.y,
+          w: layer.cropArea.w,
+          h: layer.cropArea.h,
+          opacity: 1.0,
+          feather: 8,
+          roundness: 0,
+          subtractMode: false,
+          points: []
+        }
+      ] : [];
+
+      return {
+        id: `layer_${idx}`,
+        name: layer.label,
+        type,
+        visible: layer.visible,
+        cropArea: { ...layer.cropArea },
+        x: layer.canvasPos.x,
+        y: layer.canvasPos.y,
+        scale: layer.canvasPos.w / layer.cropArea.w,
+        baseScale: layer.canvasPos.w / layer.cropArea.w,
+        rotation: 0,
+        blur: layer.blur ?? 0,
+        brightness: layer.brightness ?? 1.0,
+        contrast: layer.contrast ?? 1.0,
+        opacity: 1.0,
+        feather: 0,
+        roundness: 0,
+        masks
+      };
+    });
+
+    setLayers(newLayersList);
+    if (newLayersList.length > 0) {
+      setSelectedLayerId(newLayersList[0].id);
+    }
+  }, []);
+
+  // ─── VIEWPORTS RENDERING LOOPS (60 FPS) ───
+  const sourceCanvasRef = useRef<HTMLCanvasElement>(null);
+  const silhouetteCanvasRef = useRef<HTMLCanvasElement>(null);
+  const programCanvasRef = useRef<HTMLCanvasElement>(null);
+
+  useEffect(() => {
+    let animFrameId: number;
+
+    const renderLoop = () => {
+      const master = masterVideoRef.current;
+      if (!master || master.paused === undefined) {
+        animFrameId = requestAnimationFrame(renderLoop);
+        return;
+      }
+
+      // 1. Source Monitor Canvas (16:9 source frame with real-time blurred mask regions)
+      const srcCanvas = sourceCanvasRef.current;
+      if (srcCanvas) {
+        const ctx = srcCanvas.getContext("2d");
+        if (ctx) {
+          // Draw clean source first
+          ctx.drawImage(master, 0, 0, srcCanvas.width, srcCanvas.height);
+
+          // Overlay real-time blur directly on the mask regions
+          if (selectedLayer && selectedLayer.visible && selectedLayer.type === "crop" && selectedLayer.masks && selectedLayer.masks.length > 0) {
+            selectedLayer.masks.forEach(m => {
+              ctx.save();
+              ctx.beginPath();
+
+              if (m.type === "circle") {
+                ctx.ellipse(m.x + m.w / 2, m.y + m.h / 2, m.w / 2, m.h / 2, 0, 0, Math.PI * 2);
+              } else if (m.type === "freeform" && m.points && m.points.length > 0) {
+                m.points.forEach((p, pidx) => {
+                  if (pidx === 0) ctx.moveTo(p.x, p.y);
+                  else ctx.lineTo(p.x, p.y);
+                });
+                ctx.closePath();
+              } else if (m.type === "rect") {
+                ctx.rect(m.x, m.y, m.w, m.h);
+              }
+
+              ctx.clip();
+              // Apply real-time visual blur filter inside the mask region
+              ctx.filter = "blur(15px)";
+              ctx.drawImage(master, 0, 0, srcCanvas.width, srcCanvas.height);
+              ctx.restore();
+            });
+          }
+        }
+      }
+
+      // 2. Silhouette Monitor Canvas (9:16 black-and-white masks outline)
+      const silCanvas = silhouetteCanvasRef.current;
+      if (silCanvas) {
+        const ctx = silCanvas.getContext("2d");
+        if (ctx) {
+          ctx.fillStyle = "black";
+          ctx.fillRect(0, 0, silCanvas.width, silCanvas.height);
+
+          // Draw active masks of the selected layer in white
+          if (selectedLayer && selectedLayer.visible) {
+            ctx.fillStyle = "white";
+            const layerScale = selectedLayer.scale;
+            const baseScale = selectedLayer.baseScale ?? layerScale;
+            const drawX = selectedLayer.x - (selectedLayer.cropArea.w * (layerScale - baseScale)) / 2;
+            const drawY = selectedLayer.y - (selectedLayer.cropArea.h * (layerScale - baseScale)) / 2;
+
+            if (selectedLayer.type === "mask" && selectedLayer.masks) {
+              selectedLayer.masks.forEach(m => {
+                ctx.beginPath();
+                const rx = drawX + (m.x - selectedLayer.cropArea.x) * layerScale;
+                const ry = drawY + (m.y - selectedLayer.cropArea.y) * layerScale;
+                const rw = m.w * layerScale;
+                const rh = m.h * layerScale;
+
+                // Scale output coordinates to the 180x320 silhouette monitor size
+                const px = (rx / 1080) * silCanvas.width;
+                const py = (ry / 1920) * silCanvas.height;
+                const pw = (rw / 1080) * silCanvas.width;
+                const ph = (rh / 1920) * silCanvas.height;
+
+                if (m.type === "circle") {
+                  ctx.ellipse(px + pw / 2, py + ph / 2, pw / 2, ph / 2, 0, 0, Math.PI * 2);
+                } else if (m.type === "freeform" && m.points) {
+                  m.points.forEach((p, pidx) => {
+                    const sx = ((drawX + (p.x - selectedLayer.cropArea.x) * layerScale) / 1080) * silCanvas.width;
+                    const sy = ((drawY + (p.y - selectedLayer.cropArea.y) * layerScale) / 1920) * silCanvas.height;
+                    if (pidx === 0) ctx.moveTo(sx, sy);
+                    else ctx.lineTo(sx, sy);
+                  });
+                  ctx.closePath();
+                } else {
+                  ctx.rect(px, py, pw, ph);
+                }
+                ctx.fill();
+              });
+            } else {
+              // Standard crop bounding box in white
+              const px = (drawX / 1080) * silCanvas.width;
+              const py = (drawY / 1920) * silCanvas.height;
+              const pw = ((selectedLayer.cropArea.w * layerScale) / 1080) * silCanvas.width;
+              const ph = ((selectedLayer.cropArea.h * layerScale) / 1920) * silCanvas.height;
+              ctx.fillRect(px, py, pw, ph);
+            }
+          }
+        }
+      }
+
+      // 3. Program Monitor Canvas (9:16 layered output composition)
+      const progCanvas = programCanvasRef.current;
+      if (progCanvas) {
+        const ctx = progCanvas.getContext("2d");
+        if (ctx) {
+          ctx.fillStyle = "#050505";
+          ctx.fillRect(0, 0, progCanvas.width, progCanvas.height);
+
+          // Render blur background from the main layer (layer 0)
+          const mainLayer = layers[0];
+          if (mainLayer) {
+            ctx.save();
+            ctx.filter = "blur(20px) brightness(0.4) saturate(1.2)";
+            ctx.drawImage(master, 0, 0, progCanvas.width, progCanvas.height);
+            ctx.restore();
+          }
+
+          // Composite each active visible layer onto the program monitor
+          layers.forEach(layer => {
+            if (!layer.visible) return;
+
+            // Render layer at 1080x1920 dimensions inside offscreen layer canvas
+            const layerScale = layer.scale;
+            const w = Math.max(1, Math.round(layer.cropArea.w * layerScale));
+            const h = Math.max(1, Math.round(layer.cropArea.h * layerScale));
+
+            const layerC = getOffscreen(`render_${layer.id}`, w, h);
+            const layerCtx = layerC.getContext("2d")!;
+            
+            drawLayerWithFeather(layerCtx, master, layer, w, h);
+
+            // Centering zoom logic (scaling from center of initial container)
+            const baseScale = layer.baseScale ?? layerScale;
+            const drawX = layer.x - (layer.cropArea.w * (layerScale - baseScale)) / 2;
+            const drawY = layer.y - (layer.cropArea.h * (layerScale - baseScale)) / 2;
+
+            // Position and render on the Program Canvas
+            const px = (drawX / 1080) * progCanvas.width;
+            const py = (drawY / 1920) * progCanvas.height;
+            const pw = (w / 1080) * progCanvas.width;
+            const ph = (h / 1920) * progCanvas.height;
+
+            ctx.save();
+            ctx.globalAlpha = layer.opacity;
+            ctx.drawImage(layerC, px, py, pw, ph);
+            ctx.restore();
+          });
+        }
+      }
+
+      animFrameId = requestAnimationFrame(renderLoop);
+    };
+
+    animFrameId = requestAnimationFrame(renderLoop);
+    return () => cancelAnimationFrame(animFrameId);
+  }, [layers, selectedLayerId, selectedLayer]);
+
+  // ─── SILHOUETTE CANVAS MOUSE DRAG POSITIONING ───
+  const silDragRef = useRef({
+    active: false,
+    startX: 0,
+    startY: 0,
+    startLayerX: 0,
+    startLayerY: 0
+  });
+
+  const handleSilhouetteMouseDown = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    if (!selectedLayer) return;
+    const canvas = silhouetteCanvasRef.current;
+    if (!canvas) return;
+
+    const rect = canvas.getBoundingClientRect();
+    const clickX = ((e.clientX - rect.left) / rect.width) * 1080;
+    const clickY = ((e.clientY - rect.top) / rect.height) * 1920;
+
+    silDragRef.current = {
+      active: true,
+      startX: clickX,
+      startY: clickY,
+      startLayerX: selectedLayer.x,
+      startLayerY: selectedLayer.y
+    };
+  };
+
+  useEffect(() => {
+    const handleMouseMove = (e: MouseEvent) => {
+      if (!silDragRef.current.active || !selectedLayer) return;
+      const canvas = silhouetteCanvasRef.current;
+      if (!canvas) return;
+
+      const rect = canvas.getBoundingClientRect();
+      const currentX = ((e.clientX - rect.left) / rect.width) * 1080;
+      const currentY = ((e.clientY - rect.top) / rect.height) * 1920;
+
+      const dx = currentX - silDragRef.current.startX;
+      const dy = currentY - silDragRef.current.startY;
+
+      setLayers(prev => prev.map(l => {
+        if (l.id === selectedLayer.id) {
+          let nextX = Math.round(silDragRef.current.startLayerX + dx);
+          let nextY = Math.round(silDragRef.current.startLayerY + dy);
+
+          // Snapping logic for composition position (Left, Center, Right)
+          const layerW = l.cropArea.w * l.scale;
+          const layerH = l.cropArea.h * l.scale;
+          nextX = snapValue(nextX, [0, 540 - layerW / 2, 1080 - layerW], 40);
+          nextY = snapValue(nextY, [0, 960 - layerH / 2, 1920 - layerH], 40);
+
+          return {
+            ...l,
+            x: nextX,
+            y: nextY
+          };
+        }
+        return l;
+      }));
+    };
+
+    const handleMouseUp = () => {
+      silDragRef.current.active = false;
+    };
+
+    window.addEventListener("mousemove", handleMouseMove);
+    window.addEventListener("mouseup", handleMouseUp);
+    return () => {
+      window.removeEventListener("mousemove", handleMouseMove);
+      window.removeEventListener("mouseup", handleMouseUp);
+    };
+  }, [selectedLayerId, selectedLayer]);
+
+  // ─── 16:9 SOURCE CANVAS MASK DRAWING LOGIC ───
+  const [drawingPoints, setDrawingPoints] = useState<{ x: number, y: number }[]>([]);
+  const sourceContainerRef = useRef<HTMLDivElement>(null);
+
+  const screenToSourceCanvas = (clientX: number, clientY: number): { x: number; y: number } => {
+    const canvas = sourceCanvasRef.current;
+    if (!canvas) return { x: 0, y: 0 };
+    const rect = canvas.getBoundingClientRect();
+    const x = ((clientX - rect.left) / rect.width) * CANVAS_W;
+    const y = ((clientY - rect.top) / rect.height) * CANVAS_H;
+    return { x: Math.max(0, Math.min(CANVAS_W, x)), y: Math.max(0, Math.min(CANVAS_H, y)) };
+  };
+
+  const closePolygon = useCallback((points: { x: number; y: number }[]) => {
+    if (points.length < 3) {
+      showModal("alert", "Missing Points", "Please define at least 3 points to complete the polygon.");
+      return;
+    }
+
+    // Clean up duplicate or extremely close consecutive points
+    const cleaned: { x: number; y: number }[] = [];
+    points.forEach(p => {
+      if (cleaned.length === 0) {
+        cleaned.push(p);
+      } else {
+        const prev = cleaned[cleaned.length - 1];
+        if (Math.hypot(p.x - prev.x, p.y - prev.y) > 8) {
+          cleaned.push(p);
+        }
+      }
+    });
+
+    // If the last point is close to the first point, pop the duplicate last point
+    if (cleaned.length > 2) {
+      const first = cleaned[0];
+      const last = cleaned[cleaned.length - 1];
+      if (Math.hypot(last.x - first.x, last.y - first.y) < 15) {
+        cleaned.pop();
+      }
+    }
+
+    if (cleaned.length < 3) {
+      showModal("alert", "Invalid Polygon", "Could not create polygon because points are too close together.");
+      return;
+    }
+
+    const newMask: MaskShape = {
+      id: `mask_${Date.now()}`,
+      name: `Mask ${selectedLayer.masks.length + 1}`,
+      type: "freeform",
+      x: 0, y: 0, w: CANVAS_W, h: CANVAS_H,
+      opacity: 1.0,
+      feather: 8,
+      roundness: 0,
+      subtractMode: false,
+      points: cleaned
+    };
+
+    setLayers(prev => prev.map(l => {
+      if (l.id === selectedLayerId) {
+        const nextMasks = [...l.masks, newMask];
+        if (l.type === "mask") {
+          let minX = CANVAS_W, minY = CANVAS_H, maxX = 0, maxY = 0;
+          cleaned.forEach(p => {
+            minX = Math.min(minX, p.x);
+            minY = Math.min(minY, p.y);
+            maxX = Math.max(maxX, p.x);
+            maxY = Math.max(maxY, p.y);
+          });
+          const cropArea = { x: minX, y: minY, w: Math.max(20, maxX - minX), h: Math.max(20, maxY - minY) };
+          return {
+            ...l,
+            cropArea,
+            masks: nextMasks
+          };
+        } else {
+          return {
+            ...l,
+            masks: nextMasks
+          };
+        }
+      }
+      return l;
+    }));
+
+    setDrawingPoints([]);
+    setMouseHoverPos(null);
+    setEditorTool("select");
+  }, [selectedLayerId, selectedLayer]);
+
+  // Keyboard controls for freeform drawing
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.ctrlKey && e.key.toLowerCase() === "z") {
-        e.preventDefault();
-        undo();
-      }
-      if (e.ctrlKey && e.key.toLowerCase() === "y") {
-        e.preventDefault();
-        redo();
+      if (editorTool !== "freeform") return;
+      if (e.key === "Enter") {
+        if (drawingPoints.length > 2) {
+          closePolygon(drawingPoints);
+        }
+      } else if (e.key === "Escape") {
+        setDrawingPoints([]);
+        setMouseHoverPos(null);
+        setEditorTool("select");
       }
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [historyIndex, history]);
+  }, [editorTool, drawingPoints, closePolygon]);
 
-  // Context Menu State
-  const [menuPos, setMenuPos] = useState<{ x: number, y: number } | null>(null);
-  const [connectingHandle, setConnectingHandle] = useState<any>(null);
-  const [maskBackup, setMaskBackup] = useState<{ nodes: Node[], edges: Edge[] } | null>(null);
+  const handleSourceMouseDown = (e: React.MouseEvent<HTMLDivElement>) => {
+    if (editorTool === "select") return;
 
-  // Guides Mode State
-  const [guidesActive, setGuidesActive] = useState(false);
+    const coords = screenToSourceCanvas(e.clientX, e.clientY);
 
-  // Output Preview Dragging — ref-based for zero lag
-  const [draggedLayerId, setDraggedLayerId] = useState<string | null>(null);
-  const outputDragRef = useRef<{
-    active: boolean;
-    layerId: string;
-    nodeId: string;
-    nodeType: string;
-    startMouse: { x: number; y: number };
-    startPos: { x: number; y: number };
-    startMasks: { x: number; y: number }[] | null; // freeform/mask shapes
-    containerRect: DOMRect | null;
-  }>({
-    active: false, layerId: "", nodeId: "", nodeType: "",
-    startMouse: { x: 0, y: 0 }, startPos: { x: 0, y: 0 },
-    startMasks: null, containerRect: null,
-  });
-  const outputPreviewContainerRef = useRef<HTMLDivElement>(null);
-
-  // Mask Editor State
-  const [editingMaskNode, setEditingMaskNode] = useState<{ id: string, data: any } | null>(null);
-  const [selectedMaskId, setSelectedMaskId] = useState<string>("");
-  const [editorTool, setEditorTool] = useState<"select" | "rect" | "circle" | "freeform">("select");
-
-  const updateMaskNodeData = useCallback((maskId: string, fields: Partial<MaskShape> | any) => {
-    setNodes(nds => nds.map(n => {
-      if (n.id === maskId) {
-        const updatedData = { ...n.data };
-
-        if ((n.data as any).masks && (n.data as any).masks.length > 0) {
-          updatedData.masks = (n.data as any).masks.map((m: any) => ({ ...m, ...fields }));
+    if (editorTool === "freeform") {
+      // If clicked close to the first point, close the polygon
+      if (drawingPoints.length > 2) {
+        const firstPoint = drawingPoints[0];
+        const dist = Math.hypot(coords.x - firstPoint.x, coords.y - firstPoint.y);
+        if (dist < 20) {
+          closePolygon(drawingPoints);
+          return;
         }
-
-        if (fields.name !== undefined) updatedData.label = fields.name;
-        if (fields.type !== undefined) updatedData.shape = fields.type;
-        if (fields.x !== undefined) updatedData.maskX = fields.x;
-        if (fields.y !== undefined) updatedData.maskY = fields.y;
-        if (fields.w !== undefined) updatedData.maskW = fields.w;
-        if (fields.h !== undefined) updatedData.maskH = fields.h;
-        if (fields.points !== undefined) updatedData.points = fields.points;
-        if (fields.opacity !== undefined) updatedData.opacity = fields.opacity;
-        if (fields.feather !== undefined) updatedData.feather = fields.feather;
-        if (fields.roundness !== undefined) updatedData.roundness = fields.roundness;
-        if (fields.subtractMode !== undefined) updatedData.subtractMode = fields.subtractMode;
-
-        for (const key in fields) {
-          if (!["id", "name", "type", "x", "y", "w", "h", "points", "opacity", "feather", "roundness", "subtractMode"].includes(key)) {
-            updatedData[key] = fields[key];
-          }
-        }
-
-        return { ...n, data: updatedData };
       }
-      return n;
-    }));
-  }, []);
+      setDrawingPoints(prev => [...prev, coords]);
+    } else {
+      // Rectangle or Circle drag drawing
+      const startX = coords.x;
+      const startY = coords.y;
 
-  const allMaskShapes = nodes
-    .filter(n => n.type === "mask")
-    .map(n => {
-      const nd = n.data as any;
-      if (nd.masks && nd.masks.length > 0) {
-        const m = nd.masks[0];
-        return {
-          id: n.id,
-          name: nd.label || "Maske",
-          type: nd.shape || m.type || "circle",
-          x: nd.maskX ?? m.x ?? 200,
-          y: nd.maskY ?? m.y ?? 200,
-          w: nd.maskW ?? m.w ?? 200,
-          h: nd.maskH ?? m.h ?? 200,
-          points: nd.points ?? m.points ?? [],
-          opacity: nd.opacity ?? m.opacity ?? 1.0,
-          feather: nd.feather ?? m.feather ?? 0,
-          roundness: nd.roundness ?? m.roundness ?? 0,
-          subtractMode: nd.subtractMode ?? m.subtractMode ?? false
-        };
-      }
-      return {
-        id: n.id,
-        name: nd.label || "Maske",
-        type: nd.shape || "circle",
-        x: nd.maskX ?? 200,
-        y: nd.maskY ?? 200,
-        w: nd.maskW ?? 200,
-        h: nd.maskH ?? 200,
-        points: nd.points || [],
-        opacity: nd.opacity ?? 1.0,
-        feather: nd.feather ?? 0,
-        roundness: nd.roundness ?? 0,
-        subtractMode: nd.subtractMode ?? false
+      const handleMouseDrag = (moveEvent: MouseEvent) => {
+        const moveCoords = screenToSourceCanvas(moveEvent.clientX, moveEvent.clientY);
+        const w = Math.abs(moveCoords.x - startX);
+        const h = Math.abs(moveCoords.y - startY);
+        const x = Math.min(startX, moveCoords.x);
+        const y = Math.min(startY, moveCoords.y);
+
+        // Update active mask drawing bounds temporarily
+        setDrawingPoints([{ x, y }, { x: w, y: h }]);
       };
-    });
 
-  useEffect(() => {
-    const handleOpenMask = (e: any) => {
-      const nodeId = e.detail.nodeId;
-      const node = nodes.find(n => n.id === nodeId);
-      if (node) {
-        const ndata = node.data as any;
-        if (ndata.maskX === undefined) {
-          ndata.maskX = ndata.masks?.[0]?.x ?? 200;
-          ndata.maskY = ndata.masks?.[0]?.y ?? 200;
-          ndata.maskW = ndata.masks?.[0]?.w ?? 200;
-          ndata.maskH = ndata.masks?.[0]?.h ?? 200;
-          ndata.shape = ndata.masks?.[0]?.type ?? ndata.shape ?? "circle";
-          ndata.points = ndata.masks?.[0]?.points ?? [];
-          ndata.opacity = ndata.masks?.[0]?.opacity ?? 1.0;
-          ndata.feather = ndata.masks?.[0]?.feather ?? 0;
-          ndata.roundness = ndata.masks?.[0]?.roundness ?? 0;
-          ndata.subtractMode = ndata.masks?.[0]?.subtractMode ?? false;
-        }
+      const handleMouseRelease = (upEvent: MouseEvent) => {
+        window.removeEventListener("mousemove", handleMouseDrag);
+        window.removeEventListener("mouseup", handleMouseRelease);
 
-        setEditingMaskNode({ id: nodeId, data: JSON.parse(JSON.stringify(node.data)) });
-        setMaskBackup({ nodes: JSON.parse(JSON.stringify(nodes)), edges: JSON.parse(JSON.stringify(edges)) });
-        setSelectedMaskId(nodeId);
+        const moveCoords = screenToSourceCanvas(upEvent.clientX, upEvent.clientY);
+        const w = Math.max(20, Math.abs(moveCoords.x - startX));
+        const h = Math.max(20, Math.abs(moveCoords.y - startY));
+        const x = Math.min(startX, moveCoords.x);
+        const y = Math.min(startY, moveCoords.y);
+
+        // Create new shape mask shape on selected layer
+        const newMask: MaskShape = {
+          id: `mask_${Date.now()}`,
+          name: `Mask ${selectedLayer.masks.length + 1}`,
+          type: editorTool === "circle" ? "circle" : "rect",
+          x, y, w, h,
+          opacity: 1.0,
+          feather: 8,
+          roundness: 0,
+          subtractMode: false,
+          points: []
+        };
+
+        setLayers(prev => prev.map(l => {
+          if (l.id === selectedLayerId) {
+            const nextMasks = [...l.masks, newMask];
+            if (l.type === "mask") {
+              let minX = 1920, minY = 1080, maxX = 0, maxY = 0;
+              nextMasks.forEach(m => {
+                minX = Math.min(minX, m.x);
+                minY = Math.min(minY, m.y);
+                maxX = Math.max(maxX, m.x + m.w);
+                maxY = Math.max(maxY, m.y + m.h);
+              });
+              const cropArea = { x: minX, y: minY, w: maxX - minX, h: maxY - minY };
+              return {
+                ...l,
+                cropArea,
+                masks: nextMasks
+              };
+            } else {
+              return {
+                ...l,
+                masks: nextMasks
+              };
+            }
+          }
+          return l;
+        }));
+
+        setDrawingPoints([]);
         setEditorTool("select");
-      }
-    };
-    window.addEventListener('openMaskEditor', handleOpenMask);
-    return () => window.removeEventListener('openMaskEditor', handleOpenMask);
-  }, [nodes, edges]);
+      };
 
-  // Compiled Layers state
-  const [compiledLayers, setCompiledLayers] = useState<Layer[]>([]);
-
-  // Default Parallel Graph initialisation
-  useEffect(() => {
-    if (videoPath && nodes.length === 0) {
-      const defaultNodes: Node[] = [
-        { id: "source_1", type: "source", position: { x: 50, y: 250 }, data: { videoName } },
-
-        // Gameplay Layer path (Full 9:16 layout)
-        { id: "crop_1", type: "crop", position: { x: 350, y: 100 }, data: { label: "Layer 1", top: 0, bottom: 0, left: 480, right: 480, x: 0, y: 0, scaleX: 1.125, scaleY: 1.78, lockAspectRatio: false, blur: 0, brightness: 1, contrast: 1 } },
-
-        // Circle Mini-map Layer path
-        {
-          id: "mask_2", type: "mask", position: { x: 350, y: 400 }, data: {
-            label: "Layer 2",
-            shape: "circle",
-            masks: [
-              {
-                id: "mask_minimap_default",
-                name: "Mini Harita",
-                type: "circle",
-                x: 25, y: 25, w: 260, h: 260,
-                opacity: 1.0,
-                feather: 8,
-                roundness: 0,
-                subtractMode: false
-              }
-            ],
-            x: 30, y: 30, scaleX: 1.1, scaleY: 1.1, lockAspectRatio: true, blur: 0, brightness: 1, contrast: 1
-          }
-        },
-
-        { id: "output_1", type: "output", position: { x: 750, y: 250 }, data: {} }
-      ];
-      const defaultEdges: Edge[] = [
-        { id: "e_src_crop1", source: "source_1", target: "crop_1" },
-        { id: "e_crop1_out", source: "crop_1", target: "output_1", targetHandle: "layer_0" },
-
-        { id: "e_src_mask2", source: "source_1", target: "mask_2" },
-        { id: "e_mask2_out", source: "mask_2", target: "output_1", targetHandle: "layer_1" }
-      ];
-      setNodes(defaultNodes);
-      setEdges(defaultEdges);
-      setHistory([{ nodes: defaultNodes, edges: defaultEdges }]);
-      setHistoryIndex(0);
+      window.addEventListener("mousemove", handleMouseDrag);
+      window.addEventListener("mouseup", handleMouseRelease);
     }
-  }, [videoPath, videoName, nodes.length]);
-
-  // Sync Node labels to connected blend ports
-  useEffect(() => {
-    let changed = false;
-    const nextNodes = nodes.map(node => {
-      if (node.type === "transform" || node.type === "crop" || node.type === "mask") {
-        const port = traceDownstreamToBlendPort(node.id, edges, nodes);
-        const targetLabel = port ? (BLEND_PORTS_MAPPING[port] || "") : "";
-        if (node.data.label !== targetLabel) {
-          changed = true;
-          return { ...node, data: { ...node.data, label: targetLabel } };
-        }
-      }
-      return node;
-    });
-
-    if (changed) {
-      setNodes(nextNodes);
-    }
-  }, [edges, nodes]);
-
-  // Output Preview Dragging Layer actions
-  const handleOutputLayerMouseDown = (e: React.MouseEvent, layerId: string) => {
-    e.preventDefault();
-    e.stopPropagation();
-
-    const outputNode = nodes.find(n => n.type === "output");
-    if (!outputNode) return;
-    const connectedEdge = edges.find(ed => ed.target === outputNode.id && ed.targetHandle === layerId);
-    if (!connectedEdge) return;
-    const node = nodes.find(n => n.id === connectedEdge.source);
-    if (!node) return;
-
-    const nd = node.data as any;
-    const containerEl = outputPreviewContainerRef.current;
-
-    outputDragRef.current = {
-      active: true,
-      layerId,
-      nodeId: node.id,
-      nodeType: node.type || "",
-      startMouse: { x: e.clientX, y: e.clientY },
-      startPos: { x: nd.x ?? 0, y: nd.y ?? 0 },
-      // For mask nodes: capture starting mask shape centers for translate
-      startMasks: nd.masks ? nd.masks.map((m: any) => ({ x: m.x, y: m.y })) : null,
-      containerRect: containerEl ? containerEl.getBoundingClientRect() : null,
-    };
-    setDraggedLayerId(layerId);
   };
 
-  // Global mousemove/mouseup for output layer drag (mounted once)
-  useEffect(() => {
-    const onMove = (e: MouseEvent) => {
-      const dr = outputDragRef.current;
-      if (!dr.active) return;
+  const handleSourceDoubleClick = () => {
+    if (editorTool === "freeform" && drawingPoints.length > 2) {
+      closePolygon(drawingPoints);
+    }
+  };
 
-      const dx = e.clientX - dr.startMouse.x;
-      const dy = e.clientY - dr.startMouse.y;
-
-      // Convert pixel delta to 1920×1080 source space
-      // Card is aspect 9:16 and fills the container height
-      const rect = dr.containerRect;
-      const cardH = rect ? rect.height : 576;
-      const cardW = cardH * (9 / 16);
-      const scaleX = 1920 / cardW; // source px per screen px
-      const scaleY = 1080 / cardH;
-
-      const sdx = dx * scaleX;
-      const sdy = dy * scaleY;
-
-      setNodes(nds => nds.map(n => {
-        if (n.id !== dr.nodeId) return n;
-        const nd = n.data as any;
-
-        if (n.type === "mask" && nd.masks && nd.masks.length > 0 && dr.startMasks) {
-          // Move all mask shapes together
-          const newMasks = nd.masks.map((m: any, i: number) => ({
-            ...m,
-            x: Math.round(dr.startMasks![i].x + sdx),
-            y: Math.round(dr.startMasks![i].y + sdy),
-          }));
-          return { ...n, data: { ...nd, masks: newMasks } };
-        } else if (n.type === "mask" && nd.points && nd.points.length > 0) {
-          // Move freeform points
-          const newPts = nd.points.map((p: any, i: number) => ({
-            x: Math.round((dr.startMasks?.[i]?.x ?? p.x) + sdx),
-            y: Math.round((dr.startMasks?.[i]?.y ?? p.y) + sdy),
-          }));
-          return { ...n, data: { ...nd, points: newPts } };
-        } else {
-          // Crop / source: move x,y
-          return { ...n, data: { ...nd, x: Math.round(dr.startPos.x + sdx), y: Math.round(dr.startPos.y + sdy) } };
-        }
-      }));
+  // ─── ADD / DELETE / DUPLICATE LAYER FUNCTIONS ───
+  const handleAddNewLayer = (type: "crop" | "mask") => {
+    const id = `layer_${Date.now()}`;
+    const newLayer: ReframeLayer = {
+      id,
+      name: `${type === "crop" ? "Layer" : "Mask"} ${layers.length + 1}`,
+      type,
+      visible: true,
+      cropArea: { x: 656, y: 0, w: 608, h: 1080 },
+      x: 0,
+      y: 0,
+      scale: 1.7778,
+      baseScale: 1.7778,
+      rotation: 0,
+      blur: 0,
+      brightness: 1.0,
+      contrast: 1.0,
+      opacity: 1.0,
+      feather: type === "mask" ? 8 : 0,
+      roundness: 0,
+      masks: []
     };
+    setLayers(prev => [...prev, newLayer]);
+    setSelectedLayerId(id);
+  };
 
-    const onUp = () => {
-      if (outputDragRef.current.active) {
-        outputDragRef.current.active = false;
-        setDraggedLayerId(null);
-        // Save history after drop
-        setNodes(nds => { saveHistory(nds, edges); return nds; });
-      }
-    };
-
-    window.addEventListener("mousemove", onMove);
-    window.addEventListener("mouseup", onUp);
-    return () => { window.removeEventListener("mousemove", onMove); window.removeEventListener("mouseup", onUp); };
-  }, [edges, saveHistory]); // minimal deps, reads refs directly
-
-  const onNodesChange = useCallback(
-    (changes: NodeChange[]) => {
-      setNodes((nds) => {
-        const next = applyNodeChanges(changes, nds);
-        saveHistory(next, edges);
-        return next;
-      });
-    },
-    [edges, saveHistory]
-  );
-
-  const onEdgesChange = useCallback(
-    (changes: EdgeChange[]) => {
-      setEdges((eds) => {
-        const next = applyEdgeChanges(changes, eds);
-        saveHistory(nodes, next);
-        return next;
-      });
-    },
-    [nodes, saveHistory]
-  );
-
-  const onConnect = useCallback(
-    (params: Connection) => {
-      setEdges((eds) => {
-        const next = addEdge(params, eds);
-        saveHistory(nodes, next);
-        return next;
-      });
-    },
-    [nodes, saveHistory]
-  );
-
-  const onConnectEnd = useCallback(
-    (event: any, connectionState: any) => {
-      if (!connectionState.isValid) {
-        const { clientX, clientY } = event.touches ? event.touches[0] : event;
-        setConnectingHandle(connectionState);
-        setMenuPos({ x: clientX, y: clientY });
-      }
-    },
-    []
-  );
-
-  // Compile graph states into linear renderable Layers
-  useEffect(() => {
-    const outputNode = nodes.find(n => n.type === "output");
-    if (!outputNode) {
-      setCompiledLayers([]);
+  const handleDeleteLayer = (id: string) => {
+    if (layers.length <= 1) {
+      showModal("alert", "Warning", "You cannot delete all layers from the project. At least one layer must remain.");
       return;
     }
-
-    const newLayers: Layer[] = [];
-
-    for (let i = 0; i < 9; i++) {
-      const handleId = `layer_${i}`;
-      const connectedEdge = edges.find(e => e.target === outputNode.id && e.targetHandle === handleId);
-
-      if (connectedEdge) {
-        const node = nodes.find(n => n.id === connectedEdge.source);
-        if (!node) continue;
-
-        let cropArea = { x: 0, y: 0, w: 1920, h: 1080 };
-        let canvasPos = { x: 0, y: 0, w: 1920, h: 1080 };
-        let maskShape = "square";
-        let masksList: MaskShape[] = [];
-
-        const ndata = node.data as any;
-        const blur = ndata.blur || 0;
-        const brightness = ndata.brightness ?? 1.0;
-        const contrast = ndata.contrast ?? 1.0;
-        const scaleX = ndata.scaleX ?? 1.0;
-        const scaleY = ndata.scaleY ?? 1.0;
-        const tx = ndata.x ?? 0;
-        const ty = ndata.y ?? 0;
-
-        if (node.type === "crop") {
-          const left = ndata.left || 0;
-          const top = ndata.top || 0;
-          const w = Math.max(1, 1920 - left - (ndata.right || 0));
-          const h = Math.max(1, 1080 - top - (ndata.bottom || 0));
-
-          cropArea = { x: left, y: top, w, h };
-          canvasPos = {
-            x: tx,
-            y: ty,
-            w: w * scaleX,
-            h: h * scaleY
-          };
-        } else if (node.type === "mask") {
-          maskShape = ndata.shape || "circle";
-          if (ndata.masks && ndata.masks.length > 0) {
-            masksList = ndata.masks;
-          } else {
-            // Build mask from node-level properties
-            const mx = ndata.maskX ?? 200;
-            const my = ndata.maskY ?? 200;
-            const mw = ndata.maskW ?? 200;
-            const mh = ndata.maskH ?? 200;
-            masksList = [
-              {
-                id: node.id,
-                name: ndata.label || "Maske",
-                type: ndata.shape || "circle",
-                x: mx, y: my, w: mw, h: mh,
-                points: ndata.points || [],
-                opacity: ndata.opacity ?? 1.0,
-                feather: ndata.feather ?? 0,
-                roundness: ndata.roundness ?? 0,
-                subtractMode: ndata.subtractMode ?? false
-              }
-            ];
-          }
-          // canvasPos: full canvas so layer canvas covers the whole output
-          // Individual mask shapes handle their own positioning within
-          canvasPos = { x: 0, y: 0, w: 1920, h: 1080 };
-        }
-
-        newLayers.push({
-          id: `layer_${i}`,
-          label: BLEND_PORTS_MAPPING[handleId] || `Layer ${i + 1}`,
-          cropArea,
-          canvasPos,
-          locked: false,
-          visible: true,
-          maskShape: maskShape as any,
-          masks: masksList,
-          blur,
-          brightness,
-          contrast
-        });
-      }
-    }
-
-    setCompiledLayers(newLayers);
-  }, [nodes, edges]);
-
-  // Preset operations
-  const savePreset = () => {
-    const data = { nodes, edges };
-    localStorage.setItem("reframegg_active_preset", JSON.stringify(data));
-    alert("Şablon başarıyla kaydedildi!");
-  };
-
-  const loadPreset = () => {
-    const dataStr = localStorage.getItem("reframegg_active_preset");
-    if (dataStr) {
-      try {
-        const { nodes: loadedNodes, edges: loadedEdges } = JSON.parse(dataStr);
-        setNodes(loadedNodes);
-        setEdges(loadedEdges);
-        saveHistory(loadedNodes, loadedEdges);
-      } catch (_) {
-        alert("Kayıtlı şablon yüklenirken bir hata oluştu.");
-      }
-    } else {
-      const valPreset = defaultPresets[0];
-      alert(`Hazır Valorant Şablonu Yükleniyor: ${valPreset.presetName}`);
-
-      const valNodes: Node[] = [
-        { id: "source_1", type: "source", position: { x: 50, y: 250 }, data: { videoName } }
-      ];
-      const valEdges: Edge[] = [];
-
-      valPreset.layers.forEach((layer, idx) => {
-        const cropId = `crop_${idx}`;
-        const maskId = `mask_${idx}`;
-
-        if (layer.maskShape === "circle" || layer.maskShape === "freeform") {
-          valNodes.push({
-            id: maskId,
-            type: "mask",
-            position: { x: 350, y: 100 + idx * 180 },
-            data: {
-              label: layer.label,
-              masks: [
-                {
-                  id: `mask_preset_${idx}`,
-                  name: layer.label,
-                  type: "circle",
-                  x: layer.cropArea.x,
-                  y: layer.cropArea.y,
-                  w: layer.cropArea.w,
-                  h: layer.cropArea.h,
-                  opacity: 1.0,
-                  feather: 8,
-                  roundness: 0,
-                  subtractMode: false
-                }
-              ],
-              x: layer.canvasPos.x,
-              y: layer.canvasPos.y,
-              scaleX: layer.canvasPos.w / 1920,
-              scaleY: layer.canvasPos.h / 1080,
-              lockAspectRatio: true,
-              blur: 0, brightness: 1, contrast: 1
-            }
-          });
-          valEdges.push(
-            { id: `e_src_mask_${idx}`, source: "source_1", target: maskId },
-            { id: `e_mask_out_${idx}`, source: maskId, target: "output_1", targetHandle: `layer_${idx}` }
-          );
-        } else {
-          valNodes.push({
-            id: cropId,
-            type: "crop",
-            position: { x: 350, y: 100 + idx * 180 },
-            data: {
-              label: layer.label,
-              top: layer.cropArea.y,
-              bottom: 1080 - layer.cropArea.y - layer.cropArea.h,
-              left: layer.cropArea.x,
-              right: 1920 - layer.cropArea.x - layer.cropArea.w,
-              x: layer.canvasPos.x,
-              y: layer.canvasPos.y,
-              scaleX: layer.canvasPos.w / layer.cropArea.w,
-              scaleY: layer.canvasPos.h / layer.cropArea.h,
-              lockAspectRatio: true,
-              blur: 0, brightness: 1, contrast: 1
-            }
-          });
-          valEdges.push(
-            { id: `e_src_crop_${idx}`, source: "source_1", target: cropId },
-            { id: `e_crop_out_${idx}`, source: cropId, target: "output_1", targetHandle: `layer_${idx}` }
-          );
-        }
-      });
-
-      valNodes.push(
-        { id: "output_1", type: "output", position: { x: 750, y: 250 }, data: {} }
-      );
-
-      setNodes(valNodes);
-      setEdges(valEdges);
-      saveHistory(valNodes, valEdges);
-    }
-  };
-
-  // High performance Canvas drawing loop (60 FPS, with soft feathering blur)
-  useEffect(() => {
-    let animFrameId: number;
-    let frameCount = 0;
-
-    const drawCanvasFrames = () => {
-      frameCount++;
-      const master = masterVideoRef.current;
-      if (master) {
-        // 1. Output preview background blur (fully covers container)
-        const bgCanvas = document.querySelector(".bg-blur-canvas") as HTMLCanvasElement | null;
-        if (bgCanvas) {
-          const bgCtx = bgCanvas.getContext("2d");
-          if (bgCtx) {
-            try {
-              const gp = compiledLayers.find(l => l.id === "layer_0");
-              if (gp && gp.cropArea && gp.cropArea.w > 0 && gp.cropArea.h > 0) {
-                const scaleX = master.videoWidth / 1920;
-                const scaleY = master.videoHeight / 1080;
-                bgCtx.drawImage(
-                  master,
-                  gp.cropArea.x * scaleX,
-                  gp.cropArea.y * scaleY,
-                  gp.cropArea.w * scaleX,
-                  gp.cropArea.h * scaleY,
-                  0, 0, bgCanvas.width, bgCanvas.height
-                );
-              } else {
-                drawImageCover(bgCtx, master, 0, 0, bgCanvas.width, bgCanvas.height);
-              }
-            } catch (_) {
-              try { bgCtx.drawImage(master, 0, 0, bgCanvas.width, bgCanvas.height); } catch (__) { }
-            }
-          }
-        }
-
-        // 2. Interactive Layers Composition with soft feathered masks!
-        const canvases = document.querySelectorAll(".layer-canvas") as NodeListOf<HTMLCanvasElement>;
-        canvases.forEach((canvas) => {
-          const layerId = canvas.getAttribute("data-layer-id");
-          const layer = compiledLayers.find(l => l.id === layerId);
-          if (layer && layer.visible) {
-            const ctx = canvas.getContext("2d");
-            if (ctx) {
-              try {
-                drawLayerWithFeather(ctx, master, layer, canvas.width, canvas.height);
-              } catch (_) { }
-            }
-          }
-        });
-
-        // 3. ReactFlow Node canvas previews (optimised 20fps throttled logic for extreme 60fps graph sliding)
-        if (frameCount % 3 === 0 || !isPlaying) {
-          const nodeCanvases = document.querySelectorAll(".node-preview-canvas") as NodeListOf<HTMLCanvasElement>;
-          nodeCanvases.forEach((canvas) => {
-            const nodeId = canvas.getAttribute("data-node-id");
-            const node = nodes.find(n => n.id === nodeId);
-            if (node) {
-              const ctx = canvas.getContext("2d");
-              if (ctx) {
-                ctx.clearRect(0, 0, canvas.width, canvas.height);
-                const scaleX = master.videoWidth / 1920;
-                const scaleY = master.videoHeight / 1080;
-
-                if (node.type === "source") {
-                  ctx.drawImage(master, 0, 0, canvas.width, canvas.height);
-                }
-                else if (node.type === "crop") {
-                  const ndata = node.data as any;
-                  const left = ndata.left || 0;
-                  const top = ndata.top || 0;
-                  const w = Math.max(1, 1920 - left - (ndata.right || 0));
-                  const h = Math.max(1, 1080 - top - (ndata.bottom || 0));
-                  ctx.drawImage(master, left * scaleX, top * scaleY, w * scaleX, h * scaleY, 0, 0, canvas.width, canvas.height);
-                }
-                else if (node.type === "mask") {
-                  ctx.fillStyle = "#050505";
-                  ctx.fillRect(0, 0, canvas.width, canvas.height);
-
-                  const activeMasks = ((node.data as any).masks || []) as MaskShape[];
-                  if (activeMasks.length > 0) {
-                    activeMasks.forEach((m: any) => {
-                      ctx.save();
-                      ctx.beginPath();
-                      if (m.type === "circle") {
-                        const mx = (m.x / 1920) * canvas.width;
-                        const my = (m.y / 1080) * canvas.height;
-                        const mw = (m.w / 1920) * canvas.width;
-                        const mh = (m.h / 1080) * canvas.height;
-                        ctx.arc(mx + mw / 2, my + mh / 2, Math.min(mw, mh) / 2, 0, Math.PI * 2);
-                      } else if (m.type === "freeform" && m.points && m.points.length > 0) {
-                        m.points.forEach((p: { x: number; y: number }, pidx: number) => {
-                          const px = (p.x / 1920) * canvas.width;
-                          const py = (p.y / 1080) * canvas.height;
-                          if (pidx === 0) ctx.moveTo(px, py);
-                          else ctx.lineTo(px, py);
-                        });
-                      } else {
-                        const mx = (m.x / 1920) * canvas.width;
-                        const my = (m.y / 1080) * canvas.height;
-                        const mw = (m.w / 1920) * canvas.width;
-                        const mh = (m.h / 1080) * canvas.height;
-                        ctx.rect(mx, my, mw, mh);
-                      }
-                      ctx.clip();
-
-                      // Draw inside clipping mask
-                      if (m.type === "freeform") {
-                        ctx.drawImage(master, 0, 0, master.videoWidth, master.videoHeight, 0, 0, canvas.width, canvas.height);
-                      } else {
-                        ctx.drawImage(
-                          master,
-                          m.x * scaleX, m.y * scaleY, m.w * scaleX, m.h * scaleY,
-                          (m.x / 1920) * canvas.width, (m.y / 1080) * canvas.height,
-                          (m.w / 1920) * canvas.width, (m.h / 1080) * canvas.height
-                        );
-                      }
-                      ctx.restore();
-                    });
-                  } else {
-                    ctx.drawImage(master, 0, 0, canvas.width, canvas.height);
-                  }
-                }
-                else if (node.type === "output") {
-                  ctx.fillStyle = "#07080a";
-                  ctx.fillRect(0, 0, canvas.width, canvas.height);
-
-                  // Blurred output background
-                  ctx.save();
-                  ctx.filter = "blur(12px) brightness(0.5)";
-                  const gp = compiledLayers.find(l => l.id === "layer_0");
-                  if (gp && gp.cropArea && gp.cropArea.w > 0 && gp.cropArea.h > 0) {
-                    ctx.drawImage(
-                      master,
-                      gp.cropArea.x * scaleX,
-                      gp.cropArea.y * scaleY,
-                      gp.cropArea.w * scaleX,
-                      gp.cropArea.h * scaleY,
-                      0, 0, canvas.width, canvas.height
-                    );
-                  } else {
-                    drawImageCover(ctx, master, 0, 0, canvas.width, canvas.height);
-                  }
-                  ctx.restore();
-
-                  // Sequence layered outputs on the shared node output canvas
-                  compiledLayers.forEach(layer => {
-                    if (layer.visible) {
-                      // canvasPos is in 1920×1080 source space → scale to output canvas
-                      const px = (layer.canvasPos.x / 1920) * canvas.width;
-                      const py = (layer.canvasPos.y / 1080) * canvas.height;
-                      const pw = (layer.canvasPos.w / 1920) * canvas.width;
-                      const ph = (layer.canvasPos.h / 1080) * canvas.height;
-                      drawLayerOnSharedCanvas(ctx, master, layer, px, py, pw, ph);
-                    }
-                  });
-                }
-              }
-            }
-          });
-        }
-
-        // 4. Modal Mask Editor Previews
-        if (editingMaskNode) {
-          const meVideoCanvas = document.querySelector(".mask-editor-video-canvas") as HTMLCanvasElement | null;
-          if (meVideoCanvas) {
-            const meCtx = meVideoCanvas.getContext("2d");
-            if (meCtx) {
-              meCtx.drawImage(master, 0, 0, meVideoCanvas.width, meVideoCanvas.height);
-            }
-          }
-
-          const mePreviewCanvas = document.querySelector(".mask-editor-preview-canvas") as HTMLCanvasElement | null;
-          if (mePreviewCanvas) {
-            const mePCtx = mePreviewCanvas.getContext("2d");
-            if (mePCtx) {
-              mePCtx.fillStyle = "#000000";
-              mePCtx.fillRect(0, 0, mePreviewCanvas.width, mePreviewCanvas.height);
-
-              const activeMasks = allMaskShapes; // show ALL masks in preview
-              if (activeMasks.length > 0) {
-                activeMasks.forEach((m: any) => {
-                  const tempCanvas = document.createElement("canvas");
-                  tempCanvas.width = mePreviewCanvas.width;
-                  tempCanvas.height = mePreviewCanvas.height;
-                  const tempCtx = tempCanvas.getContext("2d");
-                  if (tempCtx) {
-                    tempCtx.fillStyle = "white";
-                    tempCtx.beginPath();
-                    if (m.type === "circle") {
-                      const mx = (m.x / 1920) * mePreviewCanvas.width;
-                      const my = (m.y / 1080) * mePreviewCanvas.height;
-                      const mw = (m.w / 1920) * mePreviewCanvas.width;
-                      const mh = (m.h / 1080) * mePreviewCanvas.height;
-                      tempCtx.arc(mx + mw / 2, my + mh / 2, Math.min(mw, mh) / 2, 0, Math.PI * 2);
-                    } else if (m.type === "freeform" && m.points && m.points.length > 0) {
-                      m.points.forEach((p: { x: number; y: number }, pidx: number) => {
-                        const px = (p.x / 1920) * mePreviewCanvas.width;
-                        const py = (p.y / 1080) * mePreviewCanvas.height;
-                        if (pidx === 0) tempCtx.moveTo(px, py);
-                        else tempCtx.lineTo(px, py);
-                      });
-                    } else {
-                      const mx = (m.x / 1920) * mePreviewCanvas.width;
-                      const my = (m.y / 1080) * mePreviewCanvas.height;
-                      const mw = (m.w / 1920) * mePreviewCanvas.width;
-                      const mh = (m.h / 1080) * mePreviewCanvas.height;
-                      tempCtx.rect(mx, my, mw, mh);
-                    }
-                    tempCtx.fill();
-
-                    const featherVal = m.feather ?? 0;
-                    if (featherVal > 0) {
-                      const maskFeather = Math.max(1, featherVal * (mePreviewCanvas.width / 1920));
-                      const blurCanvas = document.createElement("canvas");
-                      blurCanvas.width = mePreviewCanvas.width;
-                      blurCanvas.height = mePreviewCanvas.height;
-                      const blurCtx = blurCanvas.getContext("2d");
-                      if (blurCtx) {
-                        blurCtx.filter = `blur(${maskFeather}px)`;
-                        blurCtx.drawImage(tempCanvas, 0, 0);
-                        tempCtx.clearRect(0, 0, mePreviewCanvas.width, mePreviewCanvas.height);
-                        tempCtx.drawImage(blurCanvas, 0, 0);
-                      }
-                    }
-
-                    tempCtx.save();
-                    tempCtx.globalCompositeOperation = "source-in";
-                    tempCtx.drawImage(master, 0, 0, master.videoWidth, master.videoHeight, 0, 0, mePreviewCanvas.width, mePreviewCanvas.height);
-                    tempCtx.restore();
-
-                    mePCtx.drawImage(tempCanvas, 0, 0);
-                  }
-                });
-              }
-            }
-          }
-
-          const layerCanvases = document.querySelectorAll(".mask-layer-preview-canvas") as NodeListOf<HTMLCanvasElement>;
-          layerCanvases.forEach(canvas => {
-            const maskId = canvas.getAttribute("data-mask-id");
-            const mask = allMaskShapes.find((m: any) => m.id === maskId);
-            if (mask) {
-              const mCtx = canvas.getContext("2d");
-              if (mCtx) {
-                mCtx.clearRect(0, 0, canvas.width, canvas.height);
-                const scaleX = master.videoWidth / 1920;
-                const scaleY = master.videoHeight / 1080;
-
-                const tempCanvas = document.createElement("canvas");
-                tempCanvas.width = canvas.width;
-                tempCanvas.height = canvas.height;
-                const tempCtx = tempCanvas.getContext("2d");
-                if (tempCtx) {
-                  tempCtx.fillStyle = "white";
-                  tempCtx.beginPath();
-                  if (mask.type === "circle") {
-                    tempCtx.arc(canvas.width / 2, canvas.height / 2, Math.min(canvas.width, canvas.height) / 2, 0, Math.PI * 2);
-                  } else if (mask.type === "freeform" && mask.points && mask.points.length > 0) {
-                    mask.points.forEach((p: { x: number; y: number }, pidx: number) => {
-                      const px = (p.x / 1920) * canvas.width;
-                      const py = (p.y / 1080) * canvas.height;
-                      if (pidx === 0) tempCtx.moveTo(px, py);
-                      else tempCtx.lineTo(px, py);
-                    });
-                  } else {
-                    tempCtx.rect(0, 0, canvas.width, canvas.height);
-                  }
-                  tempCtx.fill();
-
-                  const featherVal = mask.feather ?? 0;
-                  if (featherVal > 0) {
-                    const maskFeather = Math.max(1, featherVal * (canvas.width / 1920));
-                    const blurCanvas = document.createElement("canvas");
-                    blurCanvas.width = canvas.width;
-                    blurCanvas.height = canvas.height;
-                    const blurCtx = blurCanvas.getContext("2d");
-                    if (blurCtx) {
-                      blurCtx.filter = `blur(${maskFeather}px)`;
-                      blurCtx.drawImage(tempCanvas, 0, 0);
-                      tempCtx.clearRect(0, 0, canvas.width, canvas.height);
-                      tempCtx.drawImage(blurCanvas, 0, 0);
-                    }
-                  }
-
-                  tempCtx.save();
-                  tempCtx.globalCompositeOperation = "source-in";
-                  if (mask.type === "freeform") {
-                    tempCtx.drawImage(master, 0, 0, master.videoWidth, master.videoHeight, 0, 0, canvas.width, canvas.height);
-                  } else {
-                    tempCtx.drawImage(
-                      master,
-                      mask.x * scaleX,
-                      mask.y * scaleY,
-                      mask.w * scaleX,
-                      mask.h * scaleY,
-                      0, 0, canvas.width, canvas.height
-                    );
-                  }
-                  tempCtx.restore();
-
-                  mCtx.drawImage(tempCanvas, 0, 0);
-                }
-              }
-            }
-          });
-        }
-      }
-      animFrameId = requestAnimationFrame(drawCanvasFrames);
-    };
-
-    if (videoPath) {
-      animFrameId = requestAnimationFrame(drawCanvasFrames);
-    }
-    return () => cancelAnimationFrame(animFrameId);
-  }, [videoPath, compiledLayers, editingMaskNode, allMaskShapes, nodes, edges, isPlaying]);
-
-  const addMaskShape = (type: "rect" | "circle" | "freeform") => {
-    const nextPort = findNextFreeOutputPort(nodes, edges);
-    if (!nextPort) {
-      alert("Maksimum 9 katman sınırına ulaşıldı!");
-      return;
-    }
-
-    const newNodeId = `mask_${Date.now()}`;
-    const newLabel = type === "circle" ? `Daire Maske ${nodes.filter(n => n.type === "mask").length + 1}` :
-      type === "rect" ? `Kutu Maske ${nodes.filter(n => n.type === "mask").length + 1}` :
-        `Serbest Maske ${nodes.filter(n => n.type === "mask").length + 1}`;
-
-    const newMaskNode: Node = {
-      id: newNodeId,
-      type: "mask",
-      position: { x: 350, y: 150 + nodes.filter(n => n.type === "mask").length * 80 },
-      data: {
-        label: newLabel,
-        shape: type,
-        maskX: type === "freeform" ? 0 : 800,
-        maskY: type === "freeform" ? 0 : 400,
-        maskW: type === "freeform" ? 1920 : 300,
-        maskH: type === "freeform" ? 1080 : 300,
-        points: type === "freeform" ? [
-          { x: 700, y: 350 },
-          { x: 1200, y: 350 },
-          { x: 1200, y: 700 },
-          { x: 700, y: 700 }
-        ] : [],
-        opacity: 1.0,
-        feather: 8, // Set a default soft feathering
-        roundness: 0,
-        subtractMode: false,
-        x: 30, y: 30, scaleX: 1.1, scaleY: 1.1, lockAspectRatio: true, blur: 0, brightness: 1, contrast: 1
-      }
-    };
-
-    const sourceNode = nodes.find(n => n.type === "source");
-    const outputNode = nodes.find(n => n.type === "output");
-
-    const newEdges: Edge[] = [];
-    if (sourceNode) {
-      newEdges.push({
-        id: `e_src_${newNodeId}`,
-        source: sourceNode.id,
-        target: newNodeId
-      });
-    }
-    if (outputNode) {
-      newEdges.push({
-        id: `e_${newNodeId}_out`,
-        source: newNodeId,
-        target: outputNode.id,
-        targetHandle: nextPort
-      });
-    }
-
-    const nextNodes = [...nodes, newMaskNode];
-    const nextEdges = [...edges, ...newEdges];
-
-    setNodes(nextNodes);
-    setEdges(nextEdges);
-    saveHistory(nextNodes, nextEdges);
-    setSelectedMaskId(newNodeId);
-  };
-
-  const deleteMaskShape = (maskId: string) => {
-    const nextNodes = nodes.filter(n => n.id !== maskId);
-    const nextEdges = edges.filter(e => e.source !== maskId && e.target !== maskId);
-
-    setNodes(nextNodes);
-    setEdges(nextEdges);
-    saveHistory(nextNodes, nextEdges);
-
-    const remainingMasks = nextNodes.filter(n => n.type === "mask");
-    if (remainingMasks.length > 0) {
-      setSelectedMaskId(remainingMasks[0].id);
-    } else {
-      setSelectedMaskId("");
+    setLayers(prev => prev.filter(l => l.id !== id));
+    if (selectedLayerId === id) {
+      const remaining = layers.filter(l => l.id !== id);
+      setSelectedLayerId(remaining[0].id);
     }
   };
 
   return (
-    <div className="w-screen h-screen flex flex-col bg-[#07080a] text-[#f5f6f8] overflow-hidden select-none font-sans">
-
-      {/* PREMIUM HEADER */}
-      <div className="h-[60px] bg-[#111318]/90 border-b border-white/8 px-6 flex items-center justify-between shadow-lg backdrop-blur-md z-30">
-        <div className="flex items-center gap-4">
-          <button
-            onClick={() => setGuidesActive(!guidesActive)}
-            className={`px-3 py-1.5 rounded-lg text-xs font-semibold border flex items-center gap-2 cursor-pointer transition duration-300 ${guidesActive
-              ? "bg-orange-600/10 border-[#ea580c] text-[#ea580c] shadow-[0_0_10px_rgba(234,88,12,0.2)]"
-              : "border-white/8 text-[#949ca9] hover:bg-white/5 hover:text-white"
-              }`}
-          >
-            <Grid size={14} />
-            <span>Guides</span>
-            <ChevronDown size={12} />
-          </button>
-
-          <button
-            onClick={() => setIsPlaying(!isPlaying)}
-            className={`w-8 h-8 rounded-full border flex items-center justify-center cursor-pointer transition duration-300 ${isPlaying
-              ? "bg-orange-600/10 border-[#ea580c] text-[#ea580c] shadow-[0_0_12px_rgba(234,88,12,0.3)] animate-pulse"
-              : "border-white/8 text-[#949ca9] hover:bg-white/5 hover:text-white"
-              }`}
-          >
-            {isPlaying ? <Pause size={12} /> : <Play size={12} />}
-          </button>
+    <div className="w-screen h-screen flex flex-col bg-[#0b0c0e] text-[#e4e4e7] overflow-hidden select-none font-sans">
+      
+      {/* ─── TOP HEADER NAVIGATION ─── */}
+      <header className="h-[55px] bg-[#121316] border-b border-white/6 px-5 flex items-center justify-between z-20">
+        <div className="flex items-center gap-3">
+          <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-orange-600 to-amber-500 flex items-center justify-center font-black text-white text-base shadow-[0_0_15px_rgba(234,88,12,0.4)]">
+            R
+          </div>
+          <span className="font-black text-base tracking-wider bg-gradient-to-r from-white to-zinc-400 bg-clip-text text-transparent">
+            REFRAMEGG COMPOSITOR
+          </span>
+          <span className="px-2 py-0.5 text-[9px] font-black tracking-widest text-[#ea580c] bg-orange-600/10 border border-orange-600/20 rounded-md">
+            PRO EDITION
+          </span>
         </div>
 
-        {/* Center: Save Preset Button */}
-        <div>
+        {/* Video Scrubber info */}
+        <div className="text-zinc-500 text-xs font-semibold flex items-center gap-2">
+          <span className="w-2 h-2 bg-[#ea580c] rounded-full animate-pulse" />
+          {videoName}
+        </div>
+
+        <div className="flex items-center gap-3">
           <button
-            onClick={savePreset}
-            className="px-4 py-2 text-xs font-extrabold tracking-wider bg-zinc-900 border border-white/8 hover:border-[#ea580c] hover:bg-orange-600/5 hover:text-[#ea580c] rounded-lg cursor-pointer transition duration-300 flex items-center shadow-lg"
+            onClick={async () => {
+              const name = await showModal("prompt", "Save Preset", "Enter a name for the new preset:", "Custom Preset 1") as string;
+              if (name) handleSaveCustomPreset(name);
+            }}
+            className="px-4 py-2 text-xs font-black tracking-wider bg-[#181a1f] hover:bg-[#20232a] border border-white/6 hover:border-orange-500 rounded-lg cursor-pointer transition duration-300 flex items-center gap-2 shadow-lg text-[#ea580c] font-black"
+            title="Saves current layer layout as a custom preset"
           >
-            <Save size={14} className="mr-2" />
+            <Sparkles size={14} />
             SAVE PRESET
           </button>
-        </div>
 
-        {/* Right: Load Preset Button */}
-        <div>
           <button
-            onClick={loadPreset}
-            className="px-4 py-2 text-xs font-extrabold tracking-wider bg-orange-600 hover:bg-[#f97316] text-white rounded-lg cursor-pointer transition duration-300 flex items-center shadow-[0_4px_15px_rgba(234,88,12,0.3)] hover:scale-[1.02] active:scale-100"
+            onClick={() => setShowPresetLibrary(true)}
+            className="px-4 py-2 text-xs font-black tracking-wider bg-[#181a1f] hover:bg-[#20232a] border border-white/6 hover:border-[#ea580c] rounded-lg cursor-pointer transition duration-300 flex items-center gap-2 shadow-lg"
           >
-            <FolderOpen size={14} className="mr-2" />
-            LOAD PRESETS
+            <FolderOpen size={14} className="text-[#ea580c]" />
+            PRESETS
+          </button>
+
+          <button
+            className="px-4 py-2 font-black tracking-widest text-xs bg-gradient-to-r from-orange-600 to-amber-500 hover:from-orange-500 hover:to-amber-400 text-white rounded-lg shadow-[0_4px_15px_rgba(234,88,12,0.3)] hover:scale-[1.02] active:scale-100 cursor-pointer transition duration-300 flex items-center gap-2"
+            onClick={async () => {
+              try {
+                showModal("alert", "Render Started", "The render process has started in the background. You can track the progress.");
+                
+                const getMaskBase64 = (layer: ReframeLayer): string | undefined => {
+                  if (!layer.masks || layer.masks.length === 0) return undefined;
+
+                  const canvas = document.createElement("canvas");
+                  canvas.width = layer.cropArea.w;
+                  canvas.height = layer.cropArea.h;
+                  const ctx = canvas.getContext("2d");
+                  if (!ctx) return undefined;
+
+                  ctx.clearRect(0, 0, canvas.width, canvas.height);
+                  ctx.fillStyle = "white";
+
+                  layer.masks.forEach(m => {
+                    ctx.beginPath();
+                    const mx = m.x - layer.cropArea.x;
+                    const my = m.y - layer.cropArea.y;
+                    const mw = m.w;
+                    const mh = m.h;
+
+                    if (m.type === "circle") {
+                      ctx.ellipse(mx + mw / 2, my + mh / 2, mw / 2, mh / 2, 0, 0, Math.PI * 2);
+                    } else if (m.type === "freeform" && m.points && m.points.length > 0) {
+                      m.points.forEach((p, pidx) => {
+                        const px = p.x - layer.cropArea.x;
+                        const py = p.y - layer.cropArea.y;
+                        if (pidx === 0) ctx.moveTo(px, py);
+                        else ctx.lineTo(px, py);
+                      });
+                      ctx.closePath();
+                    } else {
+                      ctx.rect(mx, my, mw, mh);
+                    }
+                    ctx.fill();
+                  });
+
+                  return canvas.toDataURL("image/png").replace(/^data:image\/png;base64,/, "");
+                };
+
+                // Construct standard format layers for backend compatibility
+                const backendLayers: any[] = layers.map((l, i) => {
+                  const layerScale = l.scale;
+                  const w = Math.round(l.cropArea.w * layerScale);
+                  const h = Math.round(l.cropArea.h * layerScale);
+                  
+                  const hasMasks = l.masks && l.masks.length > 0;
+                  const maskShape = l.type === "mask" 
+                    ? (hasMasks ? "freeform" : undefined)
+                    : (hasMasks ? "censor" : "square");
+                  const maskBase64 = hasMasks ? getMaskBase64(l) : undefined;
+
+                  return {
+                    id: `layer_${i}`,
+                    label: l.name,
+                    cropArea: l.cropArea,
+                    canvasPos: { x: l.x, y: l.y, w, h },
+                    locked: false,
+                    visible: l.visible,
+                    masks: l.masks,
+                    maskShape,
+                    maskBase64,
+                    blur: l.blur,
+                    brightness: l.brightness,
+                    contrast: l.contrast
+                  };
+                });
+
+                await invoke("reframe_video", {
+                  videoPath,
+                  layers: backendLayers,
+                  trimStart,
+                  trimEnd,
+                  outputRes: "1080x1920",
+                  outputFps: 60,
+                  backgroundMode: "blur",
+                  useGpu: true,
+                  outputExt: "mp4"
+                });
+                showModal("alert", "Success", "Render successfully completed! The file has been saved to the video directory.");
+              } catch (e) {
+                showModal("alert", "Error", "An error occurred during render: " + e);
+              }
+            }}
+          >
+            <Sparkles size={14} className="animate-pulse" />
+            RENDER VIDEO
           </button>
         </div>
-      </div>
+      </header>
 
-      <div className="flex-1 flex overflow-hidden w-full h-[calc(100vh-60px)]">
+      {/* ─── MAIN WORKSPACE CONTENT AREA (Three column resizable viewports) ─── */}
+      <div className="flex-1 flex overflow-hidden w-full bg-[#08090a]">
+        
+        {/* PANEL 1: 16:9 SOURCE MONITOR & DRAWING OVERLAY */}
+        <div 
+          style={{ width: `${panelWidths.left}%` }}
+          className="h-full border-r border-white/6 flex flex-col relative select-none bg-[#0a0b0d]"
+        >
+          {/* Header Panel */}
+          <div className="h-[40px] bg-[#121316] border-b border-white/6 px-4 flex items-center justify-between">
+            <span className="text-[11px] font-black uppercase tracking-wider text-zinc-400">
+              16:9 Source & Mask Drawing Monitor
+            </span>
 
-        {/* LEFT SIDEBAR: OUTPUT PREVIEW & SCRUBBER */}
-        <div className="w-[360px] h-full bg-[#07080a] border-r border-white/8 flex flex-col select-none relative z-10 shadow-2xl">
-          {/* Centered Monitor Preview without extra spacing */}
-          <OutputPreview
-            videoPath={videoPath}
-            compiledLayers={compiledLayers}
-            guidesActive={guidesActive}
-            draggedLayerId={draggedLayerId}
-            masterVideoRef={masterVideoRef}
-            handleOutputLayerMouseDown={handleOutputLayerMouseDown}
-            containerRef={outputPreviewContainerRef}
-          />
-
-          {/* Timeline Panel */}
-          <VideoScrubber
-            duration={duration}
-            currentTime={currentTime}
-            trimStart={trimStart}
-            trimEnd={trimEnd}
-            setTrimStart={setTrimStart}
-            setTrimEnd={setTrimEnd}
-            setCurrentTime={setCurrentTime}
-            masterVideoRef={masterVideoRef}
-          />
-        </div>
-
-        {/* RIGHT PANEL: REACTFLOW NODE CANVAS */}
-        <div className="flex-1 h-full relative z-0">
-          <ReactFlow
-            nodes={nodes}
-            edges={edges}
-            onNodesChange={onNodesChange}
-            onEdgesChange={onEdgesChange}
-            onConnect={onConnect}
-            onConnectEnd={onConnectEnd}
-            nodeTypes={nodeTypes}
-            colorMode="dark"
-            fitView
-            onInit={(rfi) => reactFlowInstance.current = rfi}
-            onPaneContextMenu={(e) => {
-              e.preventDefault();
-              setMenuPos({ x: e.clientX, y: e.clientY });
-              setConnectingHandle(null);
-            }}
-            onPaneClick={() => setMenuPos(null)}
-          >
-            <Background color="#171a21" gap={18} />
-            <Controls />
-            <MiniMap className="!bg-[#111318] !border-white/8 rounded-xl shadow-2xl" />
-          </ReactFlow>
-
-          {/* Context Quick-node Radial Menu */}
-          {menuPos && (
-            <div
-              className="radial-menu fixed z-[1000] w-[140px] h-[140px] flex items-center justify-center animate-[scaleIn_0.25s_cubic-bezier(0.34,1.56,0.64,1)]"
-              style={{ left: menuPos.x - 70, top: menuPos.y - 70 }}
-            >
-              <div
-                className="radial-center w-9 h-9 rounded-full bg-zinc-900 border border-white/10 text-white flex items-center justify-center cursor-pointer shadow-xl z-20 hover:scale-115 transition duration-200"
-                onClick={() => setMenuPos(null)}
+            {/* Shape Select Buttons */}
+            <div className="flex items-center gap-1.5">
+              <button
+                onClick={() => setEditorTool(editorTool === "rect" ? "select" : "rect")}
+                className={`p-1.5 rounded transition ${editorTool === "rect" ? "bg-[#ea580c] text-white" : "hover:bg-white/5 text-zinc-400"}`}
+                title="Draw Rectangle Mask"
               >
-                <Check size={16} />
-              </div>
-              {[
-                { type: "source", label: "Source", icon: <ImageIcon size={12} />, color: "#10b981", angle: 0 },
-                { type: "mask", label: "Mask", icon: <Scissors size={12} />, color: "#ec4899", angle: 90 },
-                { type: "crop", label: "Crop", icon: <Crop size={12} />, color: "#f59e0b", angle: 180 },
-                { type: "output", label: "Output", icon: <Sparkles size={12} />, color: "#10b981", angle: 270 }
-              ].map(item => {
-                const radius = 55;
-                const rad = (item.angle * Math.PI) / 180;
-                const lx = radius * Math.cos(rad);
-                const ly = radius * Math.sin(rad);
-
-                return (
-                  <button
-                    key={item.type}
-                    onClick={() => {
-                      if (reactFlowInstance.current) {
-                        const position = reactFlowInstance.current.screenToFlowPosition({ x: menuPos.x, y: menuPos.y });
-                        const newNodeId = `${item.type}_${Date.now()}`;
-                        const newNode = {
-                          id: newNodeId,
-                          type: item.type,
-                          position,
-                          data: { masks: [] }
-                        };
-
-                        setNodes((nds) => {
-                          const nextNds = [...nds, newNode as Node];
-
-                          if (connectingHandle) {
-                            const newEdge: Edge = {
-                              id: `e_${connectingHandle.nodeId}_${newNodeId}`,
-                              source: connectingHandle.nodeId,
-                              sourceHandle: connectingHandle.handleId,
-                              target: newNodeId,
-                              targetHandle: item.type === "output" ? "layer_0" : "in"
-                            };
-                            setEdges(eds => {
-                              const nextEds = [...eds, newEdge];
-                              saveHistory(nextNds, nextEds);
-                              return nextEds;
-                            });
-                          } else {
-                            saveHistory(nextNds, edges);
-                          }
-
-                          return nextNds;
-                        });
-
-                        setMenuPos(null);
-                      }
-                    }}
-                    className="absolute w-8 h-8 rounded-full bg-zinc-950 flex items-center justify-center cursor-pointer transition duration-300 hover:scale-125 z-10 radial-item hover:bg-zinc-900 border border-white/6"
-                    style={{
-                      transform: `translate(${lx}px, ${ly}px)`,
-                      borderColor: item.color,
-                      boxShadow: `0 0 12px ${item.color}44`
-                    }}
-                  >
-                    <span style={{ color: item.color }}>{item.icon}</span>
-                  </button>
-                );
-              })}
+                <Crop size={13} />
+              </button>
+              <button
+                onClick={() => setEditorTool(editorTool === "circle" ? "select" : "circle")}
+                className={`p-1.5 rounded transition ${editorTool === "circle" ? "bg-[#ea580c] text-white" : "hover:bg-white/5 text-zinc-400"}`}
+                title="Draw Circle Mask"
+              >
+                <ImageIcon size={13} />
+              </button>
+              <button
+                onClick={() => setEditorTool(editorTool === "freeform" ? "select" : "freeform")}
+                className={`p-1.5 rounded transition ${editorTool === "freeform" ? "bg-[#ea580c] text-white" : "hover:bg-white/5 text-zinc-400"}`}
+                title="Draw Freeform Polygon Mask (Double Click to Finish)"
+              >
+                <Scissors size={13} />
+              </button>
             </div>
-          )}
+          </div>
 
-          {/* RENDER VIDEO FLOATING BUTTON */}
-          <div className="absolute top-5 right-5 z-10">
-            <button
-              className="px-5 py-3 font-black tracking-widest text-xs bg-gradient-to-r from-orange-600 to-amber-500 hover:from-orange-500 hover:to-amber-400 text-white rounded-xl shadow-[0_4px_25px_rgba(234,88,12,0.4)] hover:scale-[1.03] active:scale-100 cursor-pointer transition duration-300 flex items-center gap-2"
-              onClick={async () => {
-                try {
-                  alert("Render başlatılıyor! Lütfen arka plan işleminin tamamlanmasını bekleyin...");
-                  await invoke("reframe_video", {
-                    videoPath,
-                    layers: compiledLayers,
-                    trimStart,
-                    trimEnd,
-                    outputRes: "1080x1920",
-                    outputFps: 60,
-                    backgroundMode: "blur",
-                    useGpu: true,
-                    outputExt: "mp4"
-                  });
-                  alert("Render Başarıyla Tamamlandı! Dosya video dizinine kaydedildi.");
-                } catch (e) {
-                  alert("Render sırasında bir hata oluştu: " + e);
+          {/* Canvas Wrapper */}
+          <div className="flex-1 flex items-center justify-center p-4 relative overflow-hidden bg-[#050505]">
+            <div 
+              ref={sourceContainerRef}
+              onMouseDown={handleSourceMouseDown}
+              onDoubleClick={handleSourceDoubleClick}
+              onMouseMove={(e) => {
+                if (editorTool === "freeform" && drawingPoints.length > 0) {
+                  const coords = screenToSourceCanvas(e.clientX, e.clientY);
+                  setMouseHoverPos(coords);
+                } else if (mouseHoverPos !== null) {
+                  setMouseHoverPos(null);
                 }
               }}
+              onMouseLeave={() => {
+                setMouseHoverPos(null);
+              }}
+              className="relative w-full aspect-video max-w-full max-h-full bg-zinc-950 border border-white/5 shadow-2xl cursor-crosshair"
             >
-              <Sparkles size={16} className="animate-spin-slow" />
-              RENDER VIDEO
-            </button>
+              {/* Hidden Master Video element source sync */}
+              <video
+                ref={masterVideoRef}
+                src={videoPath ? convertFileSrc(videoPath) : undefined}
+                muted
+                playsInline
+                className="hidden"
+              />
+
+              <canvas
+                ref={sourceCanvasRef}
+                width={CANVAS_W}
+                height={CANVAS_H}
+                className="w-full h-full block object-contain pointer-events-none"
+              />
+
+              {/* Drawing Preview SVG Overlay */}
+              <svg 
+                className="absolute inset-0 w-full h-full pointer-events-none"
+                viewBox={`0 0 ${CANVAS_W} ${CANVAS_H}`}
+              >
+                {/* SVG render of already drawn shape mask contours of selected layer */}
+                {selectedLayer && selectedLayer.masks && (
+                  selectedLayer.masks.map(m => {
+                    if (m.type === "circle") {
+                      return (
+                        <ellipse
+                          key={m.id}
+                          cx={m.x + m.w / 2}
+                          cy={m.y + m.h / 2}
+                          rx={m.w / 2}
+                          ry={m.h / 2}
+                          fill="rgba(234,88,12,0.1)"
+                          stroke="#ea580c"
+                          strokeWidth="3"
+                        />
+                      );
+                    } else if (m.type === "freeform" && m.points) {
+                      const d = m.points.map((p, idx) => `${idx === 0 ? "M" : "L"} ${p.x} ${p.y}`).join(" ") + " Z";
+                      return (
+                        <path
+                          key={m.id}
+                          d={d}
+                          fill="rgba(234,88,12,0.1)"
+                          stroke="#ea580c"
+                          strokeWidth="3"
+                        />
+                      );
+                    } else {
+                      return (
+                        <rect
+                          key={m.id}
+                          x={m.x}
+                          y={m.y}
+                          width={m.w}
+                          height={m.h}
+                          fill="rgba(234,88,12,0.1)"
+                          stroke="#ea580c"
+                          strokeWidth="3"
+                        />
+                      );
+                    }
+                  })
+                )}
+
+                {/* Freeform drawing line indicator */}
+                {editorTool === "freeform" && drawingPoints.length > 0 && (
+                  <>
+                    <polyline
+                      points={drawingPoints.map(p => `${p.x},${p.y}`).join(" ")}
+                      fill="none"
+                      stroke="#ea580c"
+                      strokeWidth="3"
+                    />
+                    {/* Live dashed line preview to hover cursor */}
+                    {mouseHoverPos && (
+                      <>
+                        <line
+                          x1={drawingPoints[drawingPoints.length - 1].x}
+                          y1={drawingPoints[drawingPoints.length - 1].y}
+                          x2={mouseHoverPos.x}
+                          y2={mouseHoverPos.y}
+                          stroke="#ea580c"
+                          strokeWidth="3"
+                          strokeDasharray="5,5"
+                        />
+                        <line
+                          x1={drawingPoints[0].x}
+                          y1={drawingPoints[0].y}
+                          x2={mouseHoverPos.x}
+                          y2={mouseHoverPos.y}
+                          stroke="rgba(234,88,12,0.4)"
+                          strokeWidth="2"
+                          strokeDasharray="5,5"
+                        />
+                      </>
+                    )}
+                    {drawingPoints.map((p, idx) => (
+                      <circle
+                        key={idx}
+                        cx={p.x}
+                        cy={p.y}
+                        r="6"
+                        fill="white"
+                        stroke="#ea580c"
+                        strokeWidth="2"
+                      />
+                    ))}
+                  </>
+                )}
+
+                {/* Rect/Circle drawing drag outline */}
+                {(editorTool === "rect" || editorTool === "circle") && drawingPoints.length === 2 && (
+                  editorTool === "circle" ? (
+                    <ellipse
+                      cx={drawingPoints[0].x + drawingPoints[1].x / 2}
+                      cy={drawingPoints[0].y + drawingPoints[1].y / 2}
+                      rx={drawingPoints[1].x / 2}
+                      ry={drawingPoints[1].y / 2}
+                      fill="none"
+                      stroke="#ea580c"
+                      strokeWidth="3"
+                      strokeDasharray="5,5"
+                    />
+                  ) : (
+                    <rect
+                      x={drawingPoints[0].x}
+                      y={drawingPoints[0].y}
+                      width={drawingPoints[1].x}
+                      height={drawingPoints[1].y}
+                      fill="none"
+                      stroke="#ea580c"
+                      strokeWidth="3"
+                      strokeDasharray="5,5"
+                    />
+                  )
+                )}
+              </svg>
+            </div>
+          </div>
+        </div>
+
+        {/* DRAGGABLE LEFT PANEL RESIZER BAR */}
+        <div 
+          onMouseDown={handleMouseDownLeftDivider}
+          className="w-1.5 h-full bg-[#121316] hover:bg-[#ea580c]/50 transition cursor-col-resize select-none relative z-10"
+        />
+
+        {/* PANEL 2: 9:16 SILHOUETTE MONITOR (Black & White Canvas) */}
+        <div 
+          style={{ width: `${panelWidths.middle}%` }}
+          className="h-full border-r border-white/6 flex flex-col relative select-none bg-[#0a0b0d]"
+        >
+          {/* Header Panel */}
+          <div className="h-[40px] bg-[#121316] border-b border-white/6 px-4 flex items-center">
+            <span className="text-[11px] font-black uppercase tracking-wider text-zinc-400">
+              9:16 Silhouette / Mask Matte Monitor
+            </span>
+          </div>
+
+          <div className="flex-1 flex items-center justify-center p-4 relative overflow-hidden bg-[#050505]">
+            <div className="relative h-full aspect-[9/16] bg-black border border-white/5 shadow-2xl flex items-center justify-center overflow-hidden">
+              <canvas
+                ref={silhouetteCanvasRef}
+                width={360}
+                height={640}
+                onMouseDown={handleSilhouetteMouseDown}
+                className="w-full h-full block cursor-move"
+                title="Drag and move masks according to output display."
+              />
+            </div>
+          </div>
+        </div>
+
+        {/* DRAGGABLE RIGHT PANEL RESIZER BAR */}
+        <div 
+          onMouseDown={handleMouseDownRightDivider}
+          className="w-1.5 h-full bg-[#121316] hover:bg-[#ea580c]/50 transition cursor-col-resize select-none relative z-10"
+        />
+
+        {/* PANEL 3: 9:16 PROGRAM MONITOR (Unified Preview Canvas) */}
+        <div 
+          className="flex-1 h-full flex flex-col relative select-none bg-[#0a0b0d]"
+        >
+          {/* Header Panel */}
+          <div className="h-[40px] bg-[#121316] border-b border-white/6 px-4 flex items-center justify-between">
+            <span className="text-[11px] font-black uppercase tracking-wider text-zinc-400">
+              9:16 Program / Vertical Output Preview
+            </span>
+          </div>
+
+          <div className="flex-1 flex items-center justify-center p-4 relative overflow-hidden bg-[#050505]">
+            <div className="relative h-full aspect-[9/16] bg-zinc-950 border border-white/5 shadow-2xl flex items-center justify-center overflow-hidden">
+              <canvas
+                ref={programCanvasRef}
+                width={540}
+                height={960}
+                className="w-full h-full block pointer-events-none"
+              />
+            </div>
           </div>
         </div>
 
       </div>
 
-      {/* FULLSCREEN MASK EDITOR WINDOW */}
-      {editingMaskNode && (
-        <MaskStudio
-          nodes={nodes}
-          edges={edges}
-          setNodes={setNodes}
-          setEdges={setEdges}
-          saveHistory={saveHistory}
-          undo={undo}
-          redo={redo}
-          editingMaskNode={editingMaskNode}
-          setEditingMaskNode={setEditingMaskNode}
-          maskBackup={maskBackup}
-          selectedMaskId={selectedMaskId}
-          setSelectedMaskId={setSelectedMaskId}
-          editorTool={editorTool}
-          setEditorTool={setEditorTool}
-          currentTime={currentTime}
-          duration={duration}
-          setCurrentTime={setCurrentTime}
-          isPlaying={isPlaying}
-          setIsPlaying={setIsPlaying}
-          masterVideoRef={masterVideoRef}
-          updateMaskNodeData={updateMaskNodeData}
-          allMaskShapes={allMaskShapes}
-          addMaskShape={addMaskShape}
-          deleteMaskShape={deleteMaskShape}
-        />
+      {/* DRAGGABLE FOOTER RESIZER BAR */}
+      <div 
+        onMouseDown={handleMouseDownFooterDivider}
+        className="h-1.5 w-full bg-[#121316] hover:bg-[#ea580c]/50 transition cursor-row-resize select-none relative z-30"
+        title="Drag vertically to resize bottom panel"
+      />
+
+      {/* ─── BOTTOM EDITING CONTROLS PANEL (Timeline, Scrubber, Layers, Sidebar sliders) ─── */}
+      <footer style={{ height: `${footerHeight}px` }} className="bg-[#121316] border-t border-white/6 flex flex-col z-20">
+        
+        {/* TOP SUB-ROW: SCRUBBER TIMELINE */}
+        <div className="h-[50px] border-b border-white/6 flex items-center justify-between px-5 bg-[#16181d]">
+          {/* Play/Pause Scrubber */}
+          <div className="flex items-center gap-4">
+            <button
+              onClick={() => setIsPlaying(!isPlaying)}
+              className={`w-9 h-9 rounded-lg flex items-center justify-center transition cursor-pointer ${
+                isPlaying ? "bg-orange-600 hover:bg-orange-500 text-white" : "bg-[#1f2127] hover:bg-zinc-800 text-zinc-300"
+              }`}
+            >
+              {isPlaying ? <Pause size={14} /> : <Play size={14} />}
+            </button>
+
+            {/* Timecodes */}
+            <div className="text-zinc-400 font-mono text-xs font-bold select-none">
+              {currentTime.toFixed(2)}s / {duration.toFixed(2)}s
+            </div>
+          </div>
+
+          {/* Timeline bar */}
+          <div className="flex-1 px-8">
+            <VideoScrubber
+              duration={duration}
+              currentTime={currentTime}
+              trimStart={trimStart}
+              trimEnd={trimEnd}
+              masterVideoRef={masterVideoRef}
+              setTrimStart={setTrimStart}
+              setTrimEnd={setTrimEnd}
+              setCurrentTime={setCurrentTime}
+            />
+          </div>
+        </div>
+
+        {/* BOTTOM SUB-ROW: CONTROLS & SIDEBARS */}
+        <div className="flex-1 flex overflow-hidden">
+          
+          {/* LEFT BOTTOM SIDEBAR: TRACK LIST & LAYERS */}
+          <div className="w-[320px] border-r border-white/6 flex flex-col bg-[#111215] overflow-hidden">
+            <div className="h-[38px] bg-[#16181d] px-4 flex items-center justify-between border-b border-white/5">
+              <span className="text-[10px] font-black uppercase tracking-widest text-zinc-400 flex items-center gap-1.5">
+                <Layers size={11} className="text-[#ea580c]" />
+                Layer Panel
+              </span>
+
+              {/* Add Layer Actions */}
+              <div className="flex items-center gap-1">
+                <button
+                  onClick={() => handleAddNewLayer("crop")}
+                  className="px-2 py-1 text-[9px] font-extrabold bg-[#1f2127] hover:bg-[#ea580c]/10 hover:text-[#ea580c] border border-white/5 hover:border-[#ea580c]/30 rounded transition cursor-pointer"
+                >
+                  New Layer
+                </button>
+                <button
+                  onClick={() => handleAddNewLayer("mask")}
+                  className="px-2 py-1 text-[9px] font-extrabold bg-[#ea580c]/15 hover:bg-[#ea580c]/25 text-[#ea580c] border border-[#ea580c]/30 rounded transition cursor-pointer"
+                >
+                  New Mask
+                </button>
+              </div>
+            </div>
+
+            {/* Layers List */}
+            <div className="flex-1 overflow-y-auto p-2 flex flex-col gap-1 pr-1.5">
+              {[...layers].reverse().map((layer) => {
+                const isSelected = selectedLayerId === layer.id;
+
+                return (
+                  <div
+                    key={layer.id}
+                    onClick={() => setSelectedLayerId(layer.id)}
+                    className={`flex items-center justify-between p-2.5 rounded-lg border transition cursor-pointer ${
+                      isSelected 
+                        ? "bg-orange-600/10 border-[#ea580c] text-white" 
+                        : "bg-[#15171c] hover:bg-[#181a20] border-white/5 text-zinc-400"
+                    }`}
+                  >
+                    <div className="flex items-center gap-2">
+                      {/* Visibility Toggle */}
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setLayers(prev => prev.map(l => l.id === layer.id ? { ...l, visible: !l.visible } : l));
+                        }}
+                        className="text-zinc-500 hover:text-white transition p-0.5"
+                      >
+                        {layer.visible ? <Eye size={13} /> : <EyeOff size={13} />}
+                      </button>
+                      
+                      {/* Icon indicator */}
+                      {layer.type === "mask" ? (
+                        <Scissors size={12} className="text-[#ec4899]" />
+                      ) : (
+                        <Crop size={12} className="text-[#f59e0b]" />
+                      )}
+
+                      {/* Text label / rename */}
+                      <input
+                        type="text"
+                        value={layer.name}
+                        onClick={(e) => e.stopPropagation()}
+                        onChange={(e) => {
+                          const val = e.target.value;
+                          setLayers(prev => prev.map(l => l.id === layer.id ? { ...l, name: val } : l));
+                        }}
+                        className="bg-transparent border-none text-xs font-bold text-white focus:outline-none w-[130px] font-sans"
+                      />
+                    </div>
+
+                    {/* Delete layer button */}
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleDeleteLayer(layer.id);
+                      }}
+                      className="text-zinc-600 hover:text-red-500 transition p-0.5"
+                    >
+                      <Trash2 size={13} />
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* RIGHT BOTTOM PANEL: PREMIERE EFFECT CONTROLS SIDEBAR */}
+          <div className="flex-1 flex flex-col bg-[#111215] overflow-hidden">
+            <div className="h-[38px] bg-[#16181d] px-4 flex items-center border-b border-white/5">
+              <span className="text-[10px] font-black uppercase tracking-widest text-zinc-400 flex items-center gap-1.5">
+                <Sliders size={11} className="text-[#ea580c]" />
+                Effect Controls
+              </span>
+            </div>
+
+            {selectedLayer ? (
+              <div className="flex-1 overflow-y-auto p-4 grid grid-cols-3 gap-6">
+                
+                {/* COLUMN 1: Position & Sizing */}
+                <div className="flex flex-col gap-4">
+                  <span className="text-[10px] font-black tracking-wider text-orange-500 uppercase border-b border-white/5 pb-1">
+                    Layout & Scaling
+                  </span>
+
+                  {/* Position X */}
+                  <div className="flex flex-col gap-1">
+                    <div className="flex justify-between text-[11px] font-bold text-zinc-400">
+                      <span>Position X</span>
+                      <span className="text-[#ea580c] font-mono">{selectedLayer.x}px</span>
+                    </div>
+                    <input
+                      type="range"
+                      min="-1000"
+                      max="2000"
+                      value={selectedLayer.x}
+                      onChange={(e) => {
+                        let val = parseInt(e.target.value) || 0;
+                        const layerW = selectedLayer.cropArea.w * selectedLayer.scale;
+                        val = snapValue(val, [0, 540 - layerW / 2, 1080 - layerW], 40);
+                        setLayers(prev => prev.map(l => l.id === selectedLayerId ? { ...l, x: val } : l));
+                      }}
+                      className="w-full accent-orange-600 h-1 bg-[#1c1d22] rounded-lg cursor-pointer"
+                    />
+                  </div>
+
+                  {/* Position Y */}
+                  <div className="flex flex-col gap-1">
+                    <div className="flex justify-between text-[11px] font-bold text-zinc-400">
+                      <span>Position Y</span>
+                      <span className="text-[#ea580c] font-mono">{selectedLayer.y}px</span>
+                    </div>
+                    <input
+                      type="range"
+                      min="-1000"
+                      max="2000"
+                      value={selectedLayer.y}
+                      onChange={(e) => {
+                        let val = parseInt(e.target.value) || 0;
+                        const layerH = selectedLayer.cropArea.h * selectedLayer.scale;
+                        val = snapValue(val, [0, 960 - layerH / 2, 1920 - layerH], 40);
+                        setLayers(prev => prev.map(l => l.id === selectedLayerId ? { ...l, y: val } : l));
+                      }}
+                      className="w-full accent-orange-600 h-1 bg-[#1c1d22] rounded-lg cursor-pointer"
+                    />
+                  </div>
+
+                  {/* Scale */}
+                  <div className="flex flex-col gap-1">
+                    <div className="flex justify-between text-[11px] font-bold text-zinc-400">
+                      <span>Scaling</span>
+                      <span className="text-[#ea580c] font-mono">{selectedLayer.scale.toFixed(2)}x</span>
+                    </div>
+                    <input
+                      type="range"
+                      min="0.1"
+                      max="3.0"
+                      step="0.01"
+                      value={selectedLayer.scale}
+                      onChange={(e) => {
+                        const val = parseFloat(e.target.value) || 1.0;
+                        setLayers(prev => prev.map(l => l.id === selectedLayerId ? { ...l, scale: val } : l));
+                      }}
+                      className="w-full accent-orange-600 h-1 bg-[#1c1d22] rounded-lg cursor-pointer"
+                    />
+                  </div>
+                </div>
+
+                {/* COLUMN 2: Crop & Sizing */}
+                <div className="flex flex-col gap-4">
+                  <span className="text-[10px] font-black tracking-wider text-orange-500 uppercase border-b border-white/5 pb-1">
+                    Crop & Sizing
+                  </span>
+
+                  {/* Crop Width */}
+                  <div className="flex flex-col gap-1">
+                    <div className="flex justify-between text-[11px] font-bold text-zinc-400">
+                      <span>Width (Crop)</span>
+                      <span className="text-[#ea580c] font-mono">{selectedLayer.cropArea.w}px</span>
+                    </div>
+                    <input
+                      type="range"
+                      min="50"
+                      max="1920"
+                      value={selectedLayer.cropArea.w}
+                      onChange={(e) => {
+                        let val = parseInt(e.target.value) || 50;
+                        val = snapValue(val, [1920], 60);
+                        setLayers(prev => prev.map(l => l.id === selectedLayerId ? {
+                          ...l,
+                          cropArea: { ...l.cropArea, w: val }
+                        } : l));
+                      }}
+                      className="w-full accent-orange-600 h-1 bg-[#1c1d22] rounded-lg cursor-pointer"
+                    />
+                  </div>
+
+                  {/* Crop Height */}
+                  <div className="flex flex-col gap-1">
+                    <div className="flex justify-between text-[11px] font-bold text-zinc-400">
+                      <span>Height (Crop)</span>
+                      <span className="text-[#ea580c] font-mono">{selectedLayer.cropArea.h}px</span>
+                    </div>
+                    <input
+                      type="range"
+                      min="50"
+                      max="1080"
+                      value={selectedLayer.cropArea.h}
+                      onChange={(e) => {
+                        let val = parseInt(e.target.value) || 50;
+                        val = snapValue(val, [1080], 60);
+                        setLayers(prev => prev.map(l => l.id === selectedLayerId ? {
+                          ...l,
+                          cropArea: { ...l.cropArea, h: val }
+                        } : l));
+                      }}
+                      className="w-full accent-orange-600 h-1 bg-[#1c1d22] rounded-lg cursor-pointer"
+                    />
+                  </div>
+
+                  {/* Crop X */}
+                  <div className="flex flex-col gap-1">
+                    <div className="flex justify-between text-[11px] font-bold text-zinc-400">
+                      <span>Crop Position X</span>
+                      <span className="text-[#ea580c] font-mono">{selectedLayer.cropArea.x}px</span>
+                    </div>
+                    <input
+                      type="range"
+                      min="0"
+                      max="1920"
+                      value={selectedLayer.cropArea.x}
+                      onChange={(e) => {
+                        let val = parseInt(e.target.value) || 0;
+                        val = snapValue(val, [0, 1920 - selectedLayer.cropArea.w], 40);
+                        setLayers(prev => prev.map(l => l.id === selectedLayerId ? {
+                          ...l,
+                          cropArea: { ...l.cropArea, x: val }
+                        } : l));
+                      }}
+                      className="w-full accent-orange-600 h-1 bg-[#1c1d22] rounded-lg cursor-pointer"
+                    />
+                  </div>
+
+                  {/* Crop Y */}
+                  <div className="flex flex-col gap-1">
+                    <div className="flex justify-between text-[11px] font-bold text-zinc-400">
+                      <span>Crop Position Y</span>
+                      <span className="text-[#ea580c] font-mono">{selectedLayer.cropArea.y}px</span>
+                    </div>
+                    <input
+                      type="range"
+                      min="0"
+                      max="1080"
+                      value={selectedLayer.cropArea.y}
+                      onChange={(e) => {
+                        let val = parseInt(e.target.value) || 0;
+                        val = snapValue(val, [0, 1080 - selectedLayer.cropArea.h], 40);
+                        setLayers(prev => prev.map(l => l.id === selectedLayerId ? {
+                          ...l,
+                          cropArea: { ...l.cropArea, y: val }
+                        } : l));
+                      }}
+                      className="w-full accent-orange-600 h-1 bg-[#1c1d22] rounded-lg cursor-pointer"
+                    />
+                  </div>
+                </div>
+
+                {/* COLUMN 3: Visibility, Color Filters & Effects */}
+                <div className="flex flex-col gap-4">
+                  <span className="text-[10px] font-black tracking-wider text-orange-500 uppercase border-b border-white/5 pb-1">
+                    Filters & Effects
+                  </span>
+
+                  {/* Opacity */}
+                  <div className="flex flex-col gap-1">
+                    <div className="flex justify-between text-[11px] font-bold text-zinc-400">
+                      <span>Opacity (Alpha)</span>
+                      <span className="text-[#ea580c] font-mono">{Math.round(selectedLayer.opacity * 100)}%</span>
+                    </div>
+                    <input
+                      type="range"
+                      min="0"
+                      max="1"
+                      step="0.01"
+                      value={selectedLayer.opacity}
+                      onChange={(e) => {
+                        const val = parseFloat(e.target.value) || 1.0;
+                        setLayers(prev => prev.map(l => l.id === selectedLayerId ? { ...l, opacity: val } : l));
+                      }}
+                      className="w-full accent-orange-600 h-1 bg-[#1c1d22] rounded-lg cursor-pointer"
+                    />
+                  </div>
+
+                  {/* Brightness */}
+                  <div className="flex flex-col gap-1">
+                    <div className="flex justify-between text-[11px] font-bold text-zinc-400">
+                      <span>Brightness</span>
+                      <span className="text-[#ea580c] font-mono">{selectedLayer.brightness.toFixed(2)}x</span>
+                    </div>
+                    <input
+                      type="range"
+                      min="0.5"
+                      max="2.0"
+                      step="0.05"
+                      value={selectedLayer.brightness}
+                      onChange={(e) => {
+                        const val = parseFloat(e.target.value) || 1.0;
+                        setLayers(prev => prev.map(l => l.id === selectedLayerId ? { ...l, brightness: val } : l));
+                      }}
+                      className="w-full accent-orange-600 h-1 bg-[#1c1d22] rounded-lg cursor-pointer"
+                    />
+                  </div>
+
+                  {/* Contrast */}
+                  <div className="flex flex-col gap-1">
+                    <div className="flex justify-between text-[11px] font-bold text-zinc-400">
+                      <span>Contrast</span>
+                      <span className="text-[#ea580c] font-mono">{selectedLayer.contrast.toFixed(2)}x</span>
+                    </div>
+                    <input
+                      type="range"
+                      min="0.5"
+                      max="2.0"
+                      step="0.05"
+                      value={selectedLayer.contrast}
+                      onChange={(e) => {
+                        const val = parseFloat(e.target.value) || 1.0;
+                        setLayers(prev => prev.map(l => l.id === selectedLayerId ? { ...l, contrast: val } : l));
+                      }}
+                      className="w-full accent-orange-600 h-1 bg-[#1c1d22] rounded-lg cursor-pointer"
+                    />
+                  </div>
+
+                  {/* Blur */}
+                  <div className="flex flex-col gap-1">
+                    <div className="flex justify-between text-[11px] font-bold text-zinc-400">
+                      <span>Blur</span>
+                      <span className="text-[#ea580c] font-mono">{selectedLayer.blur}px</span>
+                    </div>
+                    <input
+                      type="range"
+                      min="0"
+                      max="50"
+                      value={selectedLayer.blur}
+                      onChange={(e) => {
+                        const val = parseInt(e.target.value) || 0;
+                        setLayers(prev => prev.map(l => l.id === selectedLayerId ? { ...l, blur: val } : l));
+                      }}
+                      className="w-full accent-orange-600 h-1 bg-[#1c1d22] rounded-lg cursor-pointer"
+                    />
+                  </div>
+
+                  {/* Feather */}
+                  <div className="flex flex-col gap-1">
+                    <div className="flex justify-between text-[11px] font-bold text-zinc-400">
+                      <span>Edge Smoothing (Feather)</span>
+                      <span className="text-[#ea580c] font-mono">{selectedLayer.feather}px</span>
+                    </div>
+                    <input
+                      type="range"
+                      min="0"
+                      max="50"
+                      value={selectedLayer.feather}
+                      onChange={(e) => {
+                        const val = parseInt(e.target.value) || 0;
+                        setLayers(prev => prev.map(l => l.id === selectedLayerId ? { ...l, feather: val } : l));
+                      }}
+                      className="w-full accent-orange-600 h-1 bg-[#1c1d22] rounded-lg cursor-pointer"
+                    />
+                  </div>
+                </div>
+
+              </div>
+            ) : (
+              <div className="flex-1 flex items-center justify-center text-zinc-600 text-xs font-bold">
+                Select a layer from the left panel to edit.
+              </div>
+            )}
+          </div>
+
+        </div>
+
+      </footer>
+
+      {/* ─── MODAL: GAME DETECTED PRESET LOADER ─── */}
+      {showGameDetectedModal && (
+        <div className="fixed inset-0 z-[999] flex items-center justify-center bg-black/80 backdrop-blur-md">
+          <div className="w-[480px] bg-[#111215] border border-orange-600 rounded-2xl p-6 shadow-[0_0_50px_rgba(234,88,12,0.4)] text-center relative overflow-hidden select-none">
+            <div className="absolute -top-24 -left-24 w-48 h-48 bg-orange-600/10 rounded-full blur-3xl" />
+            <div className="absolute -bottom-24 -right-24 w-48 h-48 bg-orange-600/5 rounded-full blur-3xl" />
+
+            <div className="relative z-10">
+              <div className="w-16 h-16 mx-auto mb-4 bg-orange-600/10 border border-orange-600 rounded-full flex items-center justify-center text-orange-500">
+                <Sparkles size={28} className="animate-pulse" />
+              </div>
+
+              <h2 className="text-xl font-black text-white tracking-tight mb-2">
+                Game Clip Detected!
+              </h2>
+              <p className="text-[#949ca9] text-xs leading-relaxed mb-6">
+                We detected that this video is a <strong className="text-orange-500">{detectedGameName}</strong> clip. 
+                Would you like to apply the automatic vertical layout preset?
+              </p>
+
+              <div className="flex flex-col gap-2.5">
+                {detectedPreset && (
+                  <button
+                    onClick={() => {
+                      applyPreset(detectedPreset);
+                      setShowGameDetectedModal(false);
+                    }}
+                    className="w-full py-3 bg-gradient-to-r from-orange-600 to-amber-500 hover:from-orange-500 hover:to-amber-400 text-white font-extrabold text-xs tracking-wider rounded-xl transition duration-300 shadow-lg cursor-pointer uppercase"
+                  >
+                    Apply Preset ({detectedGameName})
+                  </button>
+                )}
+
+                <button
+                  onClick={() => setShowGameDetectedModal(false)}
+                  className="w-full py-2.5 bg-[#181a20] hover:bg-zinc-800 text-white font-bold text-xs rounded-xl border border-white/6 transition cursor-pointer"
+                >
+                  Start Full Screen Vertical (No Preset)
+                </button>
+
+                <button
+                  onClick={() => setShowGameDetectedModal(false)}
+                  className="w-full py-2.5 text-[10px] text-zinc-500 hover:text-white transition mt-1 font-semibold cursor-pointer"
+                >
+                  No, Thanks
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ─── MODAL: PRESET / TEMPLATE LIBRARY ─── */}
+      {showPresetLibrary && (
+        <div className="fixed inset-0 z-[999] flex items-center justify-center bg-black/80 backdrop-blur-md">
+          <div className="w-[620px] bg-[#111215] border border-white/8 rounded-2xl p-6 shadow-[0_20px_50px_rgba(0,0,0,0.7)] relative overflow-hidden select-none">
+            <div className="absolute -top-32 -left-32 w-64 h-64 bg-orange-600/5 rounded-full blur-3xl" />
+            <div className="absolute -bottom-32 -right-32 w-64 h-64 bg-orange-600/5 rounded-full blur-3xl" />
+
+            <div className="relative z-10">
+              <div className="flex justify-between items-center mb-6">
+                <h2 className="text-sm font-black text-white tracking-widest flex items-center gap-2 uppercase">
+                  <FolderOpen size={16} className="text-[#ea580c]" />
+                  Layout Preset Library
+                </h2>
+                <button
+                  onClick={() => setShowPresetLibrary(false)}
+                  className="text-zinc-500 hover:text-white transition text-sm font-bold p-1 cursor-pointer"
+                >
+                  ✕
+                </button>
+              </div>
+
+              <div className="grid grid-cols-2 gap-4 max-h-[380px] overflow-y-auto pr-1">
+                {/* ─── CUSTOM PRESETS ─── */}
+                {customPresets.map((preset) => (
+                  <div
+                    key={preset.presetName}
+                    onClick={() => {
+                      applyPreset(preset);
+                      setShowPresetLibrary(false);
+                    }}
+                    className="bg-orange-600/5 hover:bg-orange-600/10 border border-orange-600/20 hover:border-orange-500 rounded-xl p-4 transition duration-300 cursor-pointer flex flex-col justify-between h-[110px] shadow-lg group relative overflow-hidden"
+                  >
+                    <div>
+                      <div className="flex items-center justify-between mb-1">
+                        <div className="flex items-center gap-2">
+                          <span className="w-2 h-2 rounded-full bg-orange-500 shadow-[0_0_8px_#ea580c]" />
+                          <span className="text-[9px] text-[#ea580c] font-black uppercase tracking-wider">
+                            Custom Preset
+                          </span>
+                        </div>
+                        
+                        <button
+                          onClick={(e) => handleDeleteCustomPreset(preset.presetName, e)}
+                          className="text-zinc-600 hover:text-red-500 transition p-1 rounded hover:bg-white/5"
+                          title="Delete Preset"
+                        >
+                          ✕
+                        </button>
+                      </div>
+                      <h3 className="text-xs font-black text-white leading-snug group-hover:text-orange-500 transition duration-200">
+                        {preset.presetName}
+                      </h3>
+                    </div>
+                    <div className="text-[9px] text-zinc-500 font-bold">
+                      {preset.layers.length} Layers • Vertical 9:16
+                    </div>
+                  </div>
+                ))}
+
+                {/* ─── BUILT-IN PRESETS ─── */}
+                {defaultPresets.map((preset) => {
+                  let iconColor = "#ea580c";
+                  if (preset.game === "valorant") iconColor = "#ff4655";
+                  if (preset.game === "cs2") iconColor = "#f3a51b";
+                  if (preset.game === "apex") iconColor = "#ff2e2e";
+                  if (preset.game === "siege") iconColor = "#4b7bec";
+
+                  return (
+                    <div
+                      key={preset.presetName}
+                      onClick={() => {
+                        applyPreset(preset);
+                        setShowPresetLibrary(false);
+                      }}
+                      className="bg-[#15171c] hover:bg-[#1b1e26] border border-white/5 hover:border-orange-500/50 rounded-xl p-4 transition duration-300 cursor-pointer flex flex-col justify-between h-[110px] shadow-lg group relative overflow-hidden"
+                    >
+                      <div>
+                        <div className="flex items-center gap-2 mb-1">
+                          <span
+                            className="w-2 h-2 rounded-full"
+                            style={{ backgroundColor: iconColor, boxShadow: `0 0 8px ${iconColor}` }}
+                          />
+                          <span className="text-[9px] text-zinc-500 font-bold uppercase tracking-wider">
+                            {preset.game}
+                          </span>
+                        </div>
+                        <h3 className="text-xs font-black text-white leading-snug group-hover:text-orange-500 transition duration-200">
+                          {preset.presetName}
+                        </h3>
+                      </div>
+                      <div className="text-[9px] text-zinc-500 font-bold">
+                        {preset.layers.length} Layers • Vertical 9:16
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ─── MODAL: CUSTOM ALERT / CONFIRM / PROMPT ─── */}
+      {modal && (
+        <div className="fixed inset-0 z-[1000] flex items-center justify-center bg-black/80 backdrop-blur-md">
+          <div className="w-[420px] bg-[#111215] border border-white/10 rounded-2xl p-6 shadow-2xl relative overflow-hidden select-none">
+            <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-orange-600 to-amber-500" />
+            
+            <h2 className="text-sm font-black text-white tracking-widest uppercase mb-3 flex items-center gap-2">
+              <Sparkles size={14} className="text-orange-500" />
+              {modal.title}
+            </h2>
+            
+            <p className="text-[#949ca9] text-xs leading-relaxed mb-6 font-medium">
+              {modal.message}
+            </p>
+
+            {modal.type === "prompt" && (
+              <input
+                type="text"
+                autoFocus
+                defaultValue={modal.defaultValue}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") modal.onConfirm?.((e.target as HTMLInputElement).value);
+                }}
+                className="w-full bg-[#08090a] border border-white/10 rounded-lg px-4 py-2.5 text-xs text-white focus:outline-none focus:border-orange-500/50 mb-6 font-bold"
+                id="modal-prompt-input"
+              />
+            )}
+
+            <div className="flex gap-2">
+              {(modal.type === "confirm" || modal.type === "prompt") && (
+                <button
+                  onClick={() => modal.onCancel?.()}
+                  className="flex-1 py-2.5 bg-zinc-800 hover:bg-zinc-700 text-white font-bold text-[11px] rounded-xl border border-white/5 transition cursor-pointer uppercase tracking-wider"
+                >
+                  CANCEL
+                </button>
+              )}
+              <button
+                onClick={() => {
+                  if (modal.type === "prompt") {
+                    const val = (document.getElementById("modal-prompt-input") as HTMLInputElement)?.value;
+                    modal.onConfirm?.(val);
+                  } else {
+                    modal.onConfirm?.();
+                  }
+                }}
+                className="flex-1 py-2.5 bg-gradient-to-r from-orange-600 to-amber-500 hover:from-orange-500 hover:to-amber-400 text-white font-black text-[11px] rounded-xl shadow-lg transition duration-300 cursor-pointer uppercase tracking-wider"
+              >
+                {modal.type === "confirm" ? "YES" : "OK"}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
     </div>

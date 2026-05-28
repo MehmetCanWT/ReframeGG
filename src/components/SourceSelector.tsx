@@ -34,7 +34,7 @@ export function SourceSelector({ isDragging, handleManualVideoSelect }: SourceSe
         ReframeGG Compositor
       </h1>
       <p className="text-[#949ca9] text-lg font-medium text-center px-4 transition duration-300 hover:text-zinc-200">
-        Sürükle & bırak veya seçmek için tıklayın
+        Drag & drop or click to select
       </p>
     </div>
   );

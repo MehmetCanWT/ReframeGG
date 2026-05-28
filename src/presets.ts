@@ -21,9 +21,9 @@ export interface Layer {
   locked: boolean;
   visible: boolean;
   maskShape?: "square" | "circle" | "freeform";
-  maskPoints?: { x: number; y: number }[]; // 0.0 to 1.0 percentages
-  maskBase64?: string; // Used temporarily during render
-  masks?: MaskShape[]; // Çoklu gelişmiş maskeler
+  maskPoints?: { x: number; y: number }[];
+  maskBase64?: string;
+  masks?: MaskShape[];
   blur?: number;
   brightness?: number;
   contrast?: number;
@@ -38,148 +38,123 @@ export interface Preset {
 
 export const defaultPresets: Preset[] = [
   {
-    game: "valorant",
-    presetName: "Valorant 1080p Standart",
-    sourceResolution: { w: 1920, h: 1080 },
+    game: "Valorant",
+    presetName: "Valorant 2K (1440p) Pro Layout",
+    sourceResolution: { w: 2560, h: 1440 },
     layers: [
       {
         id: "gameplay",
-        label: "Oyun Aksiyonu (Ana)",
-        cropArea: { x: 480, y: 0, w: 960, h: 1080 },
-        canvasPos: { x: 0, y: 320, w: 1080, h: 1280 },
-        locked: true,
+        label: "Main Gameplay",
+        cropArea: { x: 864, y: 0, w: 810, h: 1440 },
+        canvasPos: { x: 0, y: 240, w: 1080, h: 1920 },
+        locked: false,
         visible: true,
         maskShape: "square"
       },
       {
         id: "minimap",
-        label: "Mini Harita (Sol Üst)",
-        cropArea: { x: 25, y: 25, w: 280, h: 280 },
-        canvasPos: { x: 30, y: 30, w: 320, h: 320 },
+        label: "Minimap",
+        cropArea: { x: 40, y: 40, w: 420, h: 420 },
+        canvasPos: { x: 30, y: 30, w: 380, h: 380 },
         locked: false,
         visible: true,
         maskShape: "circle"
       },
       {
-        id: "team_left",
-        label: "Dost Skor / Oyuncular",
-        cropArea: { x: 670, y: 20, w: 240, h: 60 },
-        canvasPos: { x: 40, y: 1650, w: 400, h: 100 },
+        id: "killfeed",
+        label: "Kill Feed",
+        cropArea: { x: 1980, y: 40, w: 540, h: 400 },
+        canvasPos: { x: 650, y: 30, w: 400, h: 300 },
         locked: false,
         visible: true,
         maskShape: "square"
       },
       {
-        id: "team_right",
-        label: "Düşman Skor / Oyuncular",
-        cropArea: { x: 1010, y: 20, w: 240, h: 60 },
-        canvasPos: { x: 640, y: 1650, w: 400, h: 100 },
+        id: "hud_center",
+        label: "Abilities & Ultimate",
+        cropArea: { x: 1050, y: 1250, w: 460, h: 120 },
+        canvasPos: { x: 310, y: 1750, w: 460, h: 120 },
         locked: false,
         visible: true,
         maskShape: "square"
       },
       {
-        id: "timer",
-        label: "Süre Sayacı",
-        cropArea: { x: 910, y: 20, w: 100, h: 60 },
-        canvasPos: { x: 490, y: 1650, w: 100, h: 60 },
+        id: "hud_health",
+        label: "Health & Shield",
+        cropArea: { x: 770, y: 1250, w: 320, h: 120 },
+        canvasPos: { x: 20, y: 1750, w: 300, h: 110 },
         locked: false,
         visible: true,
         maskShape: "square"
       },
       {
-        id: "facecam",
-        label: "Yüz Kamerası (Facecam)",
-        cropArea: { x: 1500, y: 700, w: 380, h: 280 },
-        canvasPos: { x: 300, y: 30, w: 480, h: 350 },
+        id: "hud_ammo",
+        label: "Ammo & Weapon",
+        cropArea: { x: 1470, y: 1250, w: 320, h: 120 },
+        canvasPos: { x: 760, y: 1750, w: 300, h: 110 },
         locked: false,
-        visible: false,
+        visible: true,
         maskShape: "square"
       }
     ]
   },
   {
-    game: "apex",
-    presetName: "Apex Legends 1080p Standart",
+    game: "Valorant",
+    presetName: "Valorant 1080p Standard Layout",
     sourceResolution: { w: 1920, h: 1080 },
     layers: [
       {
         id: "gameplay",
-        label: "Oyun Aksiyonu (Ana)",
-        cropArea: { x: 480, y: 0, w: 960, h: 1080 },
-        canvasPos: { x: 0, y: 320, w: 1080, h: 1280 },
-        locked: true,
+        label: "Main Gameplay",
+        cropArea: { x: 656, y: 0, w: 608, h: 1080 },
+        canvasPos: { x: 0, y: 0, w: 1080, h: 1920 },
+        locked: false,
         visible: true,
         maskShape: "square"
       },
       {
         id: "minimap",
-        label: "Mini Harita",
-        cropArea: { x: 30, y: 30, w: 260, h: 260 },
-        canvasPos: { x: 30, y: 30, w: 300, h: 300 },
+        label: "Minimap",
+        cropArea: { x: 40, y: 40, w: 280, h: 280 },
+        canvasPos: { x: 30, y: 30, w: 260, h: 260 },
         locked: false,
         visible: true,
         maskShape: "circle"
       },
       {
-        id: "squad_info",
-        label: "Kendi Can Barı (HUD)",
-        cropArea: { x: 30, y: 880, w: 350, h: 170 },
-        canvasPos: { x: 30, y: 1650, w: 400, h: 194 },
+        id: "killfeed",
+        label: "Kill Feed",
+        cropArea: { x: 1520, y: 45, w: 360, h: 280 },
+        canvasPos: { x: 700, y: 30, w: 340, h: 220 },
         locked: false,
         visible: true,
         maskShape: "square"
       },
       {
-        id: "facecam",
-        label: "Yüz Kamerası (Facecam)",
-        cropArea: { x: 1500, y: 700, w: 380, h: 280 },
-        canvasPos: { x: 300, y: 30, w: 480, h: 350 },
-        locked: false,
-        visible: false,
-        maskShape: "square"
-      }
-    ]
-  },
-  {
-    game: "cs2",
-    presetName: "Counter-Strike 2 1080p Standart",
-    sourceResolution: { w: 1920, h: 1080 },
-    layers: [
-      {
-        id: "gameplay",
-        label: "Oyun Aksiyonu (Ana)",
-        cropArea: { x: 480, y: 0, w: 960, h: 1080 },
-        canvasPos: { x: 0, y: 320, w: 1080, h: 1280 },
-        locked: true,
-        visible: true,
-        maskShape: "square"
-      },
-      {
-        id: "minimap",
-        label: "Radar",
-        cropArea: { x: 20, y: 20, w: 270, h: 270 },
-        canvasPos: { x: 30, y: 30, w: 300, h: 300 },
-        locked: false,
-        visible: true,
-        maskShape: "circle"
-      },
-      {
-        id: "timer",
-        label: "Skor ve Süre Sayacı",
-        cropArea: { x: 860, y: 960, w: 200, h: 90 },
-        canvasPos: { x: 440, y: 1650, w: 200, h: 90 },
+        id: "hud_center",
+        label: "Abilities & Ultimate",
+        cropArea: { x: 805, y: 945, w: 310, h: 85 },
+        canvasPos: { x: 385, y: 1780, w: 310, h: 85 },
         locked: false,
         visible: true,
         maskShape: "square"
       },
       {
-        id: "facecam",
-        label: "Yüz Kamerası (Facecam)",
-        cropArea: { x: 1500, y: 700, w: 380, h: 280 },
-        canvasPos: { x: 300, y: 30, w: 480, h: 350 },
+        id: "hud_health",
+        label: "Health",
+        cropArea: { x: 585, y: 945, w: 220, h: 85 },
+        canvasPos: { x: 40, y: 1780, w: 220, h: 85 },
         locked: false,
-        visible: false,
+        visible: true,
+        maskShape: "square"
+      },
+      {
+        id: "hud_ammo",
+        label: "Ammo",
+        cropArea: { x: 1115, y: 945, w: 220, h: 85 },
+        canvasPos: { x: 820, y: 1780, w: 220, h: 85 },
+        locked: false,
+        visible: true,
         maskShape: "square"
       }
     ]

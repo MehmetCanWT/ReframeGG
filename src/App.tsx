@@ -1,7 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { ReactFlowProvider } from "@xyflow/react";
 import { SourceSelector } from "./components/SourceSelector";
 import { FlowEditor } from "./components/FlowEditor";
 import "./index.css";
@@ -116,22 +115,20 @@ export default function App() {
   }
 
   return (
-    <ReactFlowProvider>
-      <FlowEditor 
-        videoPath={videoPath}
-        videoName={videoName}
-        duration={duration}
-        trimStart={trimStart}
-        trimEnd={trimEnd}
-        currentTime={currentTime}
-        isPlaying={isPlaying}
-        setIsPlaying={setIsPlaying}
-        setTrimStart={setTrimStart}
-        setTrimEnd={setTrimEnd}
-        setCurrentTime={setCurrentTime}
-        masterVideoRef={masterVideoRef}
-        handleManualVideoSelect={handleManualVideoSelect}
-      />
-    </ReactFlowProvider>
+    <FlowEditor 
+      videoPath={videoPath}
+      videoName={videoName}
+      duration={duration}
+      trimStart={trimStart}
+      trimEnd={trimEnd}
+      currentTime={currentTime}
+      isPlaying={isPlaying}
+      setIsPlaying={setIsPlaying}
+      setTrimStart={setTrimStart}
+      setTrimEnd={setTrimEnd}
+      setCurrentTime={setCurrentTime}
+      masterVideoRef={masterVideoRef}
+      handleManualVideoSelect={handleManualVideoSelect}
+    />
   );
 }
