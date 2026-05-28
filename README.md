@@ -1,60 +1,112 @@
+
 <div align="center">
 
-# 🎬 ReframeGG
+<br/>
 
-### *Transform Horizontal Video Content into Viral Vertical Formats in Seconds.*
+```
+██████╗ ███████╗███████╗██████╗  █████╗ ███╗   ███╗███████╗ ██████╗  ██████╗ 
+██╔══██╗██╔════╝██╔════╝██╔══██╗██╔══██╗████╗ ████║██╔════╝██╔════╝ ██╔════╝ 
+██████╔╝█████╗  █████╗  ██████╔╝███████║██╔████╔██║█████╗  ██║  ███╗██║  ███╗
+██╔══██╗██╔══╝  ██╔══╝  ██╔══██╗██╔══██║██║╚██╔╝██║██╔══╝  ██║   ██║██║   ██║
+██║  ██║███████╗██║     ██║  ██║██║  ██║██║ ╚═╝ ██║███████╗╚██████╔╝╚██████╔╝
+╚═╝  ╚═╝╚══════╝╚═╝     ╚═╝  ╚═╝╚═╝  ╚═╝╚═╝     ╚═╝╚══════╝ ╚═════╝  ╚═════╝ 
+```
+
+### *Transform Horizontal Video into Viral Vertical Content — Locally, Instantly.*
+
+<br/>
 
 [![React](https://img.shields.io/badge/React-19-61dafb?style=for-the-badge&logo=react&logoColor=black)](https://react.dev)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.0-3178c6?style=for-the-badge&logo=typescript&logoColor=white)](https://typescriptlang.org)
 [![TailwindCSS](https://img.shields.io/badge/TailwindCSS-v4-0f172a?style=for-the-badge&logo=tailwindcss&logoColor=38bdf8)](https://tailwindcss.com)
-[![Tauri v2](https://img.shields.io/badge/Tauri-v2--Rust-2496ed?style=for-the-badge&logo=tauri&logoColor=white)](https://tauri.app)
+[![Tauri v2](https://img.shields.io/badge/Tauri-v2-ffc131?style=for-the-badge&logo=tauri&logoColor=black)](https://tauri.app)
 [![FFmpeg](https://img.shields.io/badge/FFmpeg-Engine-007acc?style=for-the-badge&logo=ffmpeg&logoColor=white)](https://ffmpeg.org)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green?style=for-the-badge)](LICENSE)
 
-<p align="center">
-  <a href="#-key-features">Key Features</a> •
-  <a href="#-architecture">Architecture</a> •
-  <a href="#-getting-started">Getting Started</a> •
-  <a href="#-development-flow">Development</a> •
+<br/>
+
+<p>
+  <a href="#-early-access-warning">⚠️ Warning</a> &nbsp;·&nbsp;
+  <a href="#-introduction">Intro</a> &nbsp;·&nbsp;
+  <a href="#-key-features">Features</a> &nbsp;·&nbsp;
+  <a href="#-architecture">Architecture</a> &nbsp;·&nbsp;
+  <a href="#-getting-started">Getting Started</a> &nbsp;·&nbsp;
+  <a href="#-development">Development</a> &nbsp;·&nbsp;
   <a href="#-custom-presets">Presets</a>
 </p>
+
+<br/>
 
 ---
 
 </div>
 
+## ⚠️ Early Access Warning
+
+> **🚧 This project is in very early development — version `v0.1.x`.**
+
+Please read this before downloading or using ReframeGG:
+
+- 🐛 **Bugs are expected.** The application is under active development and may behave unexpectedly.
+- 💥 **It may not work at all** on your system. Some features are partially implemented or missing entirely.
+- 🔄 **Breaking changes can happen at any time** between versions without prior notice.
+- 💾 **Preset data and settings may be wiped** between updates as the schema is still evolving.
+- 🖥️ **Only Windows (x86_64) is currently tested.** macOS and Linux builds are not guaranteed to work.
+
+**Use at your own risk.** This is a passion project and not yet production-ready software. Feedback, bug reports, and contributions are warmly welcome — they directly shape the roadmap.
+
+> If you encounter a crash or a broken feature, please [open an issue](../../issues) with your system specs, the video file details, and steps to reproduce. This helps enormously.
+
+---
+
 ## ✨ Introduction
 
-**ReframeGG** is a high-performance, premium, locally-hosted desktop application designed to reframe traditional **horizontal (16:9)** videos into vertical **(9:16)** formats optimized for TikTok, YouTube Shorts, and Instagram Reels. 
+**ReframeGG** is a high-performance, locally-hosted desktop application designed to reframe traditional **horizontal (16:9)** videos into vertical **(9:16)** formats optimized for TikTok, YouTube Shorts, and Instagram Reels.
 
-By combining the lightweight security of **Tauri v2**, the dynamic reactive UI of **React 19**, and the pixel-perfect rendering capability of **FFmpeg**, ReframeGG enables gaming creators and video editors to perform complex multi-layer reframing, masking, and color adjustments locally on their machines with zero cloud costs or privacy concerns.
+Built for gaming content creators who are tired of clunky cloud tools, slow exports, and privacy concerns — ReframeGG runs entirely on your machine. No uploads. No subscriptions. No waiting.
+
+By combining the lightweight security of **Tauri v2**, the dynamic reactive UI of **React 19**, and the pixel-perfect rendering power of **FFmpeg**, ReframeGG enables complex multi-layer reframing, freeform polygon masking, and GPU-accelerated encoding — all in a sleek desktop interface.
 
 ---
 
 ## 🚀 Key Features
 
-*   🎨 **Freeform Polygon Masking:** Break free from generic squares and circles. Draw completely custom polygonal masks in real-time to isolate elements like facecams, minimaps, health bars, or kill feeds.
-*   ⚡ **Zero-Stutter Compositor:** Experience continuous, 60 FPS previews utilizing high-performance HTML5 canvas scaling and custom rendering loops powered by `requestAnimationFrame`.
-*   🚀 **Hardware Accelerated Render:** Automatically detects and integrates GPU-accelerated encoding (`h264_nvenc`, `vp9_nvenc`) via your NVIDIA or AMD graphics card for blazing-fast export times.
-*   💾 **Sleek Custom Presets:** Create, edit, and locally save your complex multi-layer layouts. Auto-suggestions recommend presets based on game filenames.
-*   🎛️ **Pixel-Perfect Micro-Adjustments:** Precise increment/decrement step buttons on every single transform, crop, contrast, brightness, and feather controller for ultimate precision.
-*   🔒 **100% Offline & Private:** Your video files never leave your system. Everything is processed directly, locally, and securely.
+| Feature | Description |
+|---|---|
+| 🎨 **Freeform Polygon Masking** | Draw fully custom polygonal masks to isolate facecams, minimaps, health bars, kill feeds, and more |
+| ⚡ **Zero-Stutter Preview** | Continuous 60 FPS canvas compositor powered by `requestAnimationFrame` — no dropped frames in preview |
+| 🚀 **Hardware Accelerated Export** | Auto-detects NVIDIA/AMD GPU and uses `h264_nvenc` / `vp9_nvenc` for blazing-fast render times |
+| 💾 **Custom Preset System** | Save, edit, and auto-load multi-layer layouts per game. Suggestions based on video filename |
+| 🎛️ **Micro-Adjustment Controls** | Increment/decrement step buttons on every transform, crop, brightness, contrast, and feather control |
+| 🔒 **100% Offline & Private** | Your footage never leaves your machine. Zero cloud. Zero telemetry |
 
 ---
 
 ## 🛠 Architecture
 
-ReframeGG is split into a robust frontend and a highly optimized desktop core:
+ReframeGG is split into a reactive frontend and a highly optimized Rust desktop core:
 
-```mermaid
-graph TD
-    A[React 19 Frontend UI] -->|IPC Commands via Tauri| B[Tauri v2 Rust Core]
-    A -->|HTML5 Canvas| C[Real-Time Compositor Preview]
-    B -->|Sidecar Execution| D[FFmpeg Engine]
-    D -->|NVENC Hardware Acceleration| E[Output 9:16 Video File]
+```
+┌─────────────────────────────────────┐
+│         React 19 Frontend           │
+│  (Editor · Preview · Layer Controls)│
+└────────────┬────────────────────────┘
+             │  Tauri IPC Commands
+             ▼
+┌─────────────────────────────────────┐
+│         Tauri v2 Rust Core          │
+│  (File I/O · Dialogs · FFmpeg IPC)  │
+└────────────┬────────────────────────┘
+             │  Sidecar Execution
+             ▼
+┌─────────────────────────────────────┐
+│         FFmpeg Sidecar Engine       │
+│  (filter_complex · NVENC · Output)  │
+└─────────────────────────────────────┘
 ```
 
-*   **Frontend (`src/`)**: React 19 + TypeScript + Tailwind CSS v4. Operates the multi-panel editor view (Source & Mask Monitor, Silhouette View, and Program View), track bar scrubbing, and active layer controls.
-*   **Backend (`src-tauri/`)**: Tauri v2 (Rust). Interacts with local storage, handles file picking via native system dialogs, and constructs advanced complex filter graphs (`-filter_complex`) to stream real-time progress events back to the UI.
+- **Frontend (`src/`)** — React 19 + TypeScript + Tailwind CSS v4. Handles the multi-panel editor (Source & Mask Monitor, Silhouette View, Program View), trackbar scrubbing, and active layer controls.
+- **Backend (`src-tauri/`)** — Tauri v2 (Rust). Manages local storage, native file dialogs, and constructs advanced FFmpeg `-filter_complex` graphs while streaming real-time progress events back to the UI.
 
 ---
 
@@ -62,16 +114,16 @@ graph TD
 
 ### Prerequisites
 
-To build and run ReframeGG locally, make sure you have the following:
+Make sure you have the following installed before building:
 
-1.  **Node.js** (v18 or higher)
-2.  **Rust Toolchain** (latest stable release)
-3.  **Tauri Prerequisites** (e.g., C++ build tools for Windows)
-4.  **FFmpeg** available in your system path, or bundled in `src-tauri/binaries/` (specifically `ffmpeg-x86_64-pc-windows-msvc.exe` on Windows).
+1. **Node.js** v18 or higher
+2. **Rust Toolchain** (latest stable — install via [rustup](https://rustup.rs))
+3. **Tauri Prerequisites** — on Windows, this means the [C++ Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/) via Visual Studio Installer
+4. **FFmpeg binary** — must be placed at `src-tauri/binaries/ffmpeg-x86_64-pc-windows-msvc.exe` (see note below)
+
+> **FFmpeg Note:** ReframeGG bundles FFmpeg as a Tauri sidecar. You must manually place the Windows x86_64 build of `ffmpeg.exe` into the `src-tauri/binaries/` folder and rename it exactly as above. You can grab it from [gyan.dev](https://www.gyan.dev/ffmpeg/builds/).
 
 ### Installation
-
-Clone the repository and install the frontend dependencies:
 
 ```bash
 git clone https://github.com/MehmetCanWT/ReframeGG.git
@@ -81,9 +133,9 @@ npm install
 
 ---
 
-## 💻 Development Flow
+## 💻 Development
 
-To start the Vite hot-reloading development server and open the desktop Tauri window simultaneously:
+Start the Vite hot-reload dev server and open the Tauri desktop window simultaneously:
 
 ```bash
 npm run dev
@@ -91,17 +143,19 @@ npm run dev
 
 ### Building for Distribution
 
-To bundle the application, compile the React assets, and package the Tauri Rust application into a production-ready installer executable:
+Bundle the React assets and compile the Tauri Rust app into a production installer:
 
 ```bash
-npm run build
+npm run tauri build
 ```
+
+The installer will be output to `src-tauri/target/release/bundle/`.
 
 ---
 
 ## 🎯 Custom Presets
 
-ReframeGG loads custom layouts and structures using a clean, portable JSON schema. Wiped presets allow you to start fresh, build game-specific templates, and persist them natively in `localStorage` for automatic, effortless recovery next time you import a video clip.
+ReframeGG uses a portable JSON schema for saving and loading layouts. Presets are stored in `localStorage` for automatic recovery on next launch.
 
 ```json
 [
@@ -114,12 +168,39 @@ ReframeGG loads custom layouts and structures using a clean, portable JSON schem
 ]
 ```
 
+Auto-suggestions match preset names to game filenames — so loading a `valorant_clip.mp4` can automatically suggest your Valorant layout.
+
+> ⚠️ **Note:** The preset schema may change between early versions. Back up your presets JSON if you've built something complex.
+
+---
+
+## 🤝 Contributing
+
+Contributions, bug reports, and feature requests are all welcome.
+
+1. Fork the repository
+2. Create a feature branch (`git checkout -b feat/my-feature`)
+3. Commit your changes (`git commit -m 'feat: add my feature'`)
+4. Push and open a Pull Request
+
+For major changes, please open an issue first to discuss the direction.
+
 ---
 
 ## 📜 License
 
-Distributed under the **MIT License**. See `LICENSE` for more information.
+Distributed under the **MIT License**. See [`LICENSE`](LICENSE) for full details.
+
+---
 
 <div align="center">
-  <p>Made with ❤️ for Gaming Content Creators.</p>
+
+<br/>
+
+**Made with ❤️ for Gaming Content Creators**
+
+*Early access · Expect bugs · Ship fast · Iterate*
+
+<br/>
+
 </div>
