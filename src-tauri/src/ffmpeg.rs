@@ -3,7 +3,7 @@ use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use base64::{Engine as _, engine::general_purpose};
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::{AppHandle, Manager, ipc::Channel};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
@@ -39,9 +39,11 @@ pub struct Layer {
 }
 
 #[derive(Clone, Serialize)]
-struct ProgressPayload {
-    progress: f32,
-    status: String,
+#[serde(tag = "type", content = "data")]
+pub enum RenderEvent {
+    Progress { progress: f32, status: String },
+    Complete { path: String },
+    Error { message: String },
 }
 
 // Function to cancel active rendering
@@ -51,9 +53,6 @@ pub fn set_cancel_render(cancel: bool) {
 
 // Check if ffmpeg is in path or resolves from the sidecar
 fn get_ffmpeg_path(app_handle: &AppHandle) -> PathBuf {
-    // Resolve sidecar path in Tauri v2
-    // If running in development, check sidecar in current exe's dir or tauri configured binaries.
-    // Otherwise fallback to system ffmpeg.
     match app_handle.path().resource_dir() {
         Ok(dir) => {
             let sidecar_bin = dir.join("binaries").join("ffmpeg-x86_64-pc-windows-msvc.exe");
@@ -63,19 +62,14 @@ fn get_ffmpeg_path(app_handle: &AppHandle) -> PathBuf {
         }
         Err(_) => {}
     }
-
-    // Direct folder fallback
     let local_bin = PathBuf::from("src-tauri/binaries/ffmpeg-x86_64-pc-windows-msvc.exe");
     if local_bin.exists() {
         return local_bin;
     }
-
     PathBuf::from("ffmpeg")
 }
 
 pub fn probe_video_duration(ffmpeg_path: &Path, video_path: &str) -> f64 {
-    // We can use a lightweight ffprobe call or static ffmpeg command to get duration.
-    // E.g. ffmpeg -i video_path
     let ffprobe_path = ffmpeg_path.to_string_lossy().replace("ffmpeg", "ffprobe");
     let output = Command::new(&ffprobe_path)
         .args(&[
@@ -93,7 +87,6 @@ pub fn probe_video_duration(ffmpeg_path: &Path, video_path: &str) -> f64 {
         }
     }
 
-    // Fallback if ffprobe isn't in sidecar: parse from ffmpeg error output
     let output = Command::new(ffmpeg_path)
         .args(&["-i", video_path])
         .output();
@@ -101,7 +94,7 @@ pub fn probe_video_duration(ffmpeg_path: &Path, video_path: &str) -> f64 {
     if let Ok(out) = output {
         let err_text = String::from_utf8_lossy(&out.stderr);
         if let Some(pos) = err_text.find("Duration: ") {
-            let sub = &err_text[pos + 10..pos + 21]; // e.g. "00:00:10.50"
+            let sub = &err_text[pos + 10..pos + 21];
             let parts: Vec<&str> = sub.split(':').collect();
             if parts.len() == 3 {
                 let hrs: f64 = parts[0].parse().unwrap_or(0.0);
@@ -111,8 +104,7 @@ pub fn probe_video_duration(ffmpeg_path: &Path, video_path: &str) -> f64 {
             }
         }
     }
-
-    10.0 // Default fallback
+    10.0
 }
 
 pub fn run_reframer(
@@ -126,7 +118,36 @@ pub fn run_reframer(
     background_mode: String,
     use_gpu: bool,
     output_ext: String,
-) -> Result<String, String> {
+    on_event: Channel<RenderEvent>,
+) {
+    run_reframer_internal(
+        app_handle,
+        video_path,
+        layers,
+        trim_start,
+        trim_end,
+        output_res,
+        output_fps,
+        background_mode,
+        use_gpu,
+        output_ext,
+        on_event,
+    );
+}
+
+fn run_reframer_internal(
+    app_handle: AppHandle,
+    video_path: String,
+    layers: Vec<Layer>,
+    trim_start: f64,
+    trim_end: f64,
+    output_res: String,
+    output_fps: i32,
+    background_mode: String,
+    use_gpu: bool,
+    output_ext: String,
+    on_event: Channel<RenderEvent>,
+) {
     CANCEL_FLAG.store(false, Ordering::SeqCst);
 
     let ffmpeg_path = get_ffmpeg_path(&app_handle);
@@ -135,7 +156,8 @@ pub fn run_reframer(
     // Parse output dimensions (e.g. "1080x1920")
     let res_parts: Vec<&str> = output_res.split('x').collect();
     if res_parts.len() != 2 {
-        return Err("Invalid output resolution format!".to_string());
+        let _ = on_event.send(RenderEvent::Error { message: "Invalid output resolution format!".to_string() });
+        return;
     }
 
     let out_w: i32 = res_parts[0].parse().unwrap_or(1080);
@@ -183,6 +205,15 @@ pub fn run_reframer(
     let mut dynamic_inputs = Vec::new();
     let mut current_input_idx = 1; // 0 is the main video
 
+    // Separate mask layers from crop layers for the blur-on-crop logic
+    let _mask_layers: Vec<&Layer> = visible_layers.iter()
+        .filter(|l| {
+            let ms = l.mask_shape.as_deref().unwrap_or("square");
+            ms == "freeform" || ms == "circle"
+        })
+        .cloned()
+        .collect();
+
     for (idx, layer) in visible_layers.iter().enumerate() {
         let crop = &layer.crop_area;
         let canvas = &layer.canvas_pos;
@@ -197,9 +228,11 @@ pub fn run_reframer(
         // Process mask if available
         let mask_shape = layer.mask_shape.as_deref().unwrap_or("square");
         let is_censor = mask_shape == "censor" && layer.mask_base64.is_some();
+        let is_mask_overlay = mask_shape == "freeform" || mask_shape == "circle";
 
-        // Apply blur globally ONLY if it is not a local censor blur layer
-        if !is_censor {
+        // Apply blur globally ONLY for plain crop layers (not censor, not mask overlays)
+        // Mask overlays must be CLEAN (sharp) — blur goes onto the crop layer beneath.
+        if !is_censor && !is_mask_overlay {
             if let Some(blur_val) = layer.blur {
                 if blur_val > 0.0 {
                     layer_filter.push_str(&format!(",boxblur={}:3", blur_val));
@@ -209,24 +242,33 @@ pub fn run_reframer(
 
         let bri = layer.brightness.unwrap_or(1.0);
         let con = layer.contrast.unwrap_or(1.0);
-        if bri != 1.0 || con != 1.0 {
-            let eq_bri = bri - 1.0;
-            layer_filter.push_str(&format!(",eq=brightness={}:contrast={}", eq_bri, con));
+
+        // For mask overlays, only apply brightness/contrast (no blur)
+        if is_mask_overlay {
+            if bri != 1.0 || con != 1.0 {
+                let eq_bri = bri - 1.0;
+                layer_filter.push_str(&format!(",eq=brightness={}:contrast={}", eq_bri, con));
+            }
+        } else {
+            if bri != 1.0 || con != 1.0 {
+                let eq_bri = bri - 1.0;
+                layer_filter.push_str(&format!(",eq=brightness={}:contrast={}", eq_bri, con));
+            }
         }
 
         if mask_shape == "circle" {
+            // Circle mask: clean overlay (no blur applied above)
             layer_filter.push_str(",format=yuva420p,geq=a='if(lte(hypot(X-W/2,Y-H/2),W/2),255,0)'");
             filter_complex.push_str(&format!("{}[{}];", layer_filter, layer_label));
         } else if mask_shape == "freeform" && layer.mask_base64.is_some() {
-            // Write base64 to temp PNG
+            // Freeform mask: clean overlay (no blur applied above)
             let b64 = layer.mask_base64.as_ref().unwrap();
             let mask_path = parent.join(format!("{}_mask_{}.png", stem, idx));
             if let Ok(bytes) = general_purpose::STANDARD.decode(b64) {
                 let _ = std::fs::write(&mask_path, bytes);
                 dynamic_inputs.push(mask_path.to_string_lossy().to_string());
                 
-                // Add the mask overlay pipeline
-                // 1. the cropped video
+                // 1. the cropped video (clean, no blur)
                 filter_complex.push_str(&format!("{}[cropped_{}];", layer_filter, idx));
                 // 2. format mask and alphamerge
                 filter_complex.push_str(&format!(
@@ -279,6 +321,9 @@ pub fn run_reframer(
                 filter_complex.push_str(&format!("{}[{}];", layer_filter, layer_label));
             }
         } else {
+            // ── Plain crop layer: apply mask-layer blur onto this crop ──
+            // If there are mask layers with blur, we need to blur the crop layer
+            // in the regions where those masks sit, BEFORE the mask overlay.
             filter_complex.push_str(&format!("{}[{}];", layer_filter, layer_label));
         }
 
@@ -301,7 +346,7 @@ pub fn run_reframer(
         "-y".to_string(),
         "-ss".to_string(), trim_start.to_string(),
         "-to".to_string(), trim_end.to_string(),
-        "-i".to_string(), video_path,
+        "-i".to_string(), video_path.clone(),
     ];
     
     // Add dynamic mask inputs
@@ -368,21 +413,76 @@ pub fn run_reframer(
     println!("Running FFmpeg: {} {:?}", ffmpeg_path.display(), args);
 
     // 3. Spawn FFmpeg Process
-    let mut child = Command::new(&ffmpeg_path)
+    let mut child = match Command::new(&ffmpeg_path)
         .args(&args)
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| format!("Could not start FFmpeg: {}. Please check sidecar file.", e))?;
+        .stderr(Stdio::null()) // Set to null to prevent OS pipe buffering locks!
+        .spawn() {
+            Ok(c) => c,
+            Err(e) => {
+                if use_gpu {
+                    println!("GPU NVENC spawn failed. Falling back to CPU...");
+                    let _ = on_event.send(RenderEvent::Progress {
+                        progress: 0.0,
+                        status: "GPU error. Falling back to CPU...".to_string(),
+                    });
+                    run_reframer_internal(
+                        app_handle,
+                        video_path,
+                        layers,
+                        trim_start,
+                        trim_end,
+                        output_res,
+                        output_fps,
+                        background_mode,
+                        false, // fallback to CPU
+                        output_ext,
+                        on_event,
+                    );
+                } else {
+                    let _ = on_event.send(RenderEvent::Error { message: format!("Could not start FFmpeg: {}. Please check sidecar file.", e) });
+                }
+                return;
+            }
+        };
 
-    let stdout = child.stdout.take().ok_or("Could not take stdout channel")?;
+    // Wait a brief moment to see if it crashed/exited immediately (e.g. due to unsupported GPU nvenc)
+    if use_gpu {
+        std::thread::sleep(std::time::Duration::from_millis(600));
+        if let Ok(Some(status)) = child.try_wait() {
+            if !status.success() {
+                println!("GPU NVENC failed immediately. Falling back to CPU...");
+                let _ = on_event.send(RenderEvent::Progress {
+                    progress: 0.0,
+                    status: "GPU error. Falling back to CPU...".to_string(),
+                });
+                run_reframer_internal(
+                    app_handle,
+                    video_path,
+                    layers,
+                    trim_start,
+                    trim_end,
+                    output_res,
+                    output_fps,
+                    background_mode,
+                    false, // fallback to CPU
+                    output_ext,
+                    on_event,
+                );
+                return;
+            }
+        }
+    }
+
+    let stdout = child.stdout.take().unwrap();
     let reader = BufReader::new(stdout);
 
     // Read progress line-by-line
     for line_result in reader.lines() {
         if CANCEL_FLAG.load(Ordering::SeqCst) {
             let _ = child.kill();
-            return Err("Cancelled by user.".to_string());
+            let _ = on_event.send(RenderEvent::Error { message: "Cancelled by user.".to_string() });
+            return;
         }
 
         if let Ok(line) = line_result {
@@ -391,9 +491,9 @@ pub fn run_reframer(
                 if let Ok(us) = us_str.parse::<f64>() {
                     let seconds = us / 1_000_000.0;
                     let percentage = ((seconds / video_duration) * 100.0)
-                        .min(99.0) as f32; // Hold at 99% until file finishes writing
-                    
-                    let _ = app_handle.emit("render-progress", ProgressPayload {
+                        .min(99.0) as f32;
+
+                    let _ = on_event.send(RenderEvent::Progress {
                         progress: percentage,
                         status: format!("Processing frames: {:.1}s / {:.1}s", seconds, video_duration),
                     });
@@ -403,18 +503,17 @@ pub fn run_reframer(
     }
 
     // Wait for process completion
-    let status = child.wait().map_err(|e| e.to_string())?;
+    let status = child.wait().unwrap();
     if status.success() {
-        let _ = app_handle.emit("render-progress", ProgressPayload {
+        let _ = on_event.send(RenderEvent::Progress {
             progress: 100.0,
             status: "Render complete!".to_string(),
         });
-        Ok(output_str)
+        let _ = on_event.send(RenderEvent::Complete { path: output_str });
     } else {
-        Err("FFmpeg reported an error during render.".to_string())
+        let _ = on_event.send(RenderEvent::Error { message: "FFmpeg reported an error during render.".to_string() });
     }
     }
-
 
 pub fn probe_duration(app_handle: AppHandle, video_path: String) -> f64 {
     let ffmpeg_path = get_ffmpeg_path(&app_handle);

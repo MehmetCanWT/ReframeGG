@@ -1,9 +1,9 @@
 mod ffmpeg;
 
-use ffmpeg::{run_reframer, set_cancel_render, probe_duration, Layer};
+use ffmpeg::{run_reframer, set_cancel_render, probe_duration, Layer, RenderEvent};
 use rfd::FileDialog;
 use serde::Serialize;
-use tauri::AppHandle;
+use tauri::{AppHandle, ipc::Channel};
 
 #[derive(Serialize)]
 pub struct VideoInfo {
@@ -41,19 +41,23 @@ fn reframe_video(
     background_mode: String,
     use_gpu: bool,
     output_ext: String,
-) -> Result<String, String> {
-    run_reframer(
-        app_handle,
-        video_path,
-        layers,
-        trim_start,
-        trim_end,
-        output_res,
-        output_fps,
-        background_mode,
-        use_gpu,
-        output_ext,
-    )
+    on_event: Channel<RenderEvent>,
+) {
+    std::thread::spawn(move || {
+        run_reframer(
+            app_handle,
+            video_path,
+            layers,
+            trim_start,
+            trim_end,
+            output_res,
+            output_fps,
+            background_mode,
+            use_gpu,
+            output_ext,
+            on_event,
+        );
+    });
 }
 
 #[tauri::command]

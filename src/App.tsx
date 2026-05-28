@@ -128,7 +128,6 @@ export default function App() {
       setTrimEnd={setTrimEnd}
       setCurrentTime={setCurrentTime}
       masterVideoRef={masterVideoRef}
-      handleManualVideoSelect={handleManualVideoSelect}
     />
   );
 }

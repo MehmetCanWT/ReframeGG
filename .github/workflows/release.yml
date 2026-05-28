@@ -1,0 +1,88 @@
+name: Release Tauri App
+
+on:
+  push:
+    branches:
+      - main
+      - master
+
+permissions:
+  contents: write
+
+jobs:
+  check-and-release:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+          cache: 'npm'
+
+      - name: Check if release exists
+        id: check_release
+        shell: bash
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          echo "Current version is $VERSION"
+          if gh release view "v$VERSION" >/dev/null 2>&1; then
+            echo "Release v$VERSION already exists. Skipping build."
+            echo "exists=true" >> $GITHUB_OUTPUT
+          else
+            echo "Release v$VERSION does not exist yet. Proceeding with build."
+            echo "exists=false" >> $GITHUB_OUTPUT
+            echo "version=$VERSION" >> $GITHUB_OUTPUT
+          fi
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install Rust
+        if: steps.check_release.outputs.exists == 'false'
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust Cache
+        if: steps.check_release.outputs.exists == 'false'
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: './src-tauri -> target'
+
+      - name: Install Frontend Dependencies
+        if: steps.check_release.outputs.exists == 'false'
+        run: npm install
+
+      - name: Build Tauri App
+        if: steps.check_release.outputs.exists == 'false'
+        run: npm run tauri build
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+
+      - name: Create Release and Upload Assets
+        if: steps.check_release.outputs.exists == 'false'
+        shell: bash
+        run: |
+          VERSION="${{ steps.check_release.outputs.version }}"
+          echo "Creating release for v$VERSION..."
+          
+          # Find all built installers (.exe, .msi) recursively in the tauri target release bundle directory
+          FILES=$(find src-tauri/target/release/bundle -type f \( -name "*.exe" -o -name "*.msi" \))
+          
+          if [ -z "$FILES" ]; then
+            echo "No installer files found to release!"
+            exit 1
+          fi
+          
+          echo "Found files to upload:"
+          echo "$FILES"
+          
+          # Create GitHub Release
+          gh release create "v$VERSION" $FILES \
+            --title "ReframeGG v$VERSION" \
+            --notes "Automated release for version $VERSION" \
+            --draft=false \
+            --prerelease=false
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
