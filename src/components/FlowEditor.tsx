@@ -338,12 +338,27 @@ export function FlowEditor({
       };
 
       const backendLayers = layers.map(l => ({
-        id: l.id, label: l.name, cropArea: l.cropArea,
-        canvasPos: { x: Math.round(l.x), y: Math.round(l.y), w: Math.round(l.cropArea.w * l.scale), h: Math.round(l.cropArea.h * l.scale) },
-        locked: false, visible: l.visible,
+        id: l.id,
+        label: l.name,
+        cropArea: {
+          x: Math.round(l.cropArea.x),
+          y: Math.round(l.cropArea.y),
+          w: Math.round(l.cropArea.w),
+          h: Math.round(l.cropArea.h)
+        },
+        canvasPos: {
+          x: Math.round(l.x),
+          y: Math.round(l.y),
+          w: Math.round(l.cropArea.w * l.scale),
+          h: Math.round(l.cropArea.h * l.scale)
+        },
+        locked: false,
+        visible: l.visible,
         maskShape: l.type === "mask" ? "freeform" : (l.masks.length > 0 ? "censor" : "square"),
         maskBase64: l.masks.length > 0 ? getMaskBase64(l) : undefined,
-        blur: l.blur, brightness: l.brightness, contrast: l.contrast
+        blur: l.blur,
+        brightness: l.brightness,
+        contrast: l.contrast
       }));
 
       await invoke("reframe_video", {
