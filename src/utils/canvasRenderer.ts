@@ -69,6 +69,31 @@ export const drawLayerWithMasks = (
 
       if (m.type === "circle") {
         maskCtx.ellipse(mx + mw / 2, my + mh / 2, mw / 2, mh / 2, 0, 0, Math.PI * 2);
+      } else if (m.type === "triangle") {
+        maskCtx.moveTo(mx + mw / 2, my);
+        maskCtx.lineTo(mx + mw, my + mh);
+        maskCtx.lineTo(mx, my + mh);
+        maskCtx.closePath();
+      } else if (m.type === "star") {
+        const cx = mx + mw / 2;
+        const cy = my + mh / 2;
+        const spikes = 5;
+        const outerRadius = Math.min(mw, mh) / 2;
+        const innerRadius = outerRadius * 0.4;
+        let rot = (Math.PI / 2) * 3;
+        const step = Math.PI / spikes;
+        maskCtx.moveTo(cx, cy - outerRadius);
+        for (let i = 0; i < spikes; i++) {
+          let x = cx + Math.cos(rot) * outerRadius;
+          let y = cy + Math.sin(rot) * outerRadius;
+          maskCtx.lineTo(x, y);
+          rot += step;
+          x = cx + Math.cos(rot) * innerRadius;
+          y = cy + Math.sin(rot) * innerRadius;
+          maskCtx.lineTo(x, y);
+          rot += step;
+        }
+        maskCtx.closePath();
       } else if (m.type === "freeform" && m.points) {
         m.points.forEach((p, i) => {
           const px = ((p.x - layer.cropArea.x) / layer.cropArea.w) * width;
@@ -191,6 +216,31 @@ export const renderSource = (
 
       if (m.type === "circle") {
         ctx.ellipse(m.x + m.w / 2, m.y + m.h / 2, m.w / 2, m.h / 2, 0, 0, Math.PI * 2);
+      } else if (m.type === "triangle") {
+        ctx.moveTo(m.x + m.w / 2, m.y);
+        ctx.lineTo(m.x + m.w, m.y + m.h);
+        ctx.lineTo(m.x, m.y + m.h);
+        ctx.closePath();
+      } else if (m.type === "star") {
+        const cx = m.x + m.w / 2;
+        const cy = m.y + m.h / 2;
+        const spikes = 5;
+        const outerRadius = Math.min(m.w, m.h) / 2;
+        const innerRadius = outerRadius * 0.4;
+        let rot = (Math.PI / 2) * 3;
+        const step = Math.PI / spikes;
+        ctx.moveTo(cx, cy - outerRadius);
+        for (let i = 0; i < spikes; i++) {
+          let x = cx + Math.cos(rot) * outerRadius;
+          let y = cy + Math.sin(rot) * outerRadius;
+          ctx.lineTo(x, y);
+          rot += step;
+          x = cx + Math.cos(rot) * innerRadius;
+          y = cy + Math.sin(rot) * innerRadius;
+          ctx.lineTo(x, y);
+          rot += step;
+        }
+        ctx.closePath();
       } else if (m.type === "freeform" && m.points && m.points.length > 0) {
         m.points.forEach((p, pidx) => {
           if (pidx === 0) ctx.moveTo(p.x, p.y);
@@ -227,6 +277,31 @@ export const renderSource = (
 
       if (m.type === "circle") {
         ctx.ellipse(mx + mw / 2, my + mh / 2, mw / 2, mh / 2, 0, 0, Math.PI * 2);
+      } else if (m.type === "triangle") {
+        ctx.moveTo(mx + mw / 2, my);
+        ctx.lineTo(mx + mw, my + mh);
+        ctx.lineTo(mx, my + mh);
+        ctx.closePath();
+      } else if (m.type === "star") {
+        const cx = mx + mw / 2;
+        const cy = my + mh / 2;
+        const spikes = 5;
+        const outerRadius = Math.min(mw, mh) / 2;
+        const innerRadius = outerRadius * 0.4;
+        let rot = (Math.PI / 2) * 3;
+        const step = Math.PI / spikes;
+        ctx.moveTo(cx, cy - outerRadius);
+        for (let i = 0; i < spikes; i++) {
+          let x = cx + Math.cos(rot) * outerRadius;
+          let y = cy + Math.sin(rot) * outerRadius;
+          ctx.lineTo(x, y);
+          rot += step;
+          x = cx + Math.cos(rot) * innerRadius;
+          y = cy + Math.sin(rot) * innerRadius;
+          ctx.lineTo(x, y);
+          rot += step;
+        }
+        ctx.closePath();
       } else if (m.type === "freeform" && m.points && m.points.length > 0) {
         m.points.forEach((p, pidx) => {
           const px = p.x * sx;
@@ -251,7 +326,7 @@ export const renderSource = (
     if (!layer.visible) return;
     const isSelected = layer.id === selectedLayerId;
     ctx.save();
-    ctx.strokeStyle = isSelected ? "#ea580c" : "rgba(255, 255, 255, 0.35)";
+    ctx.strokeStyle = isSelected ? "#ec4899" : "rgba(255, 255, 255, 0.35)";
     ctx.lineWidth = isSelected ? 2 : 1;
     
     if (layer.masks) {
@@ -259,6 +334,35 @@ export const renderSource = (
          if (m.type === "circle") {
             ctx.beginPath();
             ctx.ellipse(m.x + m.w/2, m.y + m.h/2, m.w/2, m.h/2, 0, 0, Math.PI * 2);
+            ctx.stroke();
+         } else if (m.type === "triangle") {
+            ctx.beginPath();
+            ctx.moveTo(m.x + m.w / 2, m.y);
+            ctx.lineTo(m.x + m.w, m.y + m.h);
+            ctx.lineTo(m.x, m.y + m.h);
+            ctx.closePath();
+            ctx.stroke();
+         } else if (m.type === "star") {
+            ctx.beginPath();
+            const cx = m.x + m.w / 2;
+            const cy = m.y + m.h / 2;
+            const spikes = 5;
+            const outerRadius = Math.min(m.w, m.h) / 2;
+            const innerRadius = outerRadius * 0.4;
+            let rot = (Math.PI / 2) * 3;
+            const step = Math.PI / spikes;
+            ctx.moveTo(cx, cy - outerRadius);
+            for (let i = 0; i < spikes; i++) {
+              let x = cx + Math.cos(rot) * outerRadius;
+              let y = cy + Math.sin(rot) * outerRadius;
+              ctx.lineTo(x, y);
+              rot += step;
+              x = cx + Math.cos(rot) * innerRadius;
+              y = cy + Math.sin(rot) * innerRadius;
+              ctx.lineTo(x, y);
+              rot += step;
+            }
+            ctx.closePath();
             ctx.stroke();
          } else if (m.type === "freeform" && m.points) {
             ctx.beginPath();
@@ -308,16 +412,43 @@ export const renderSilhouette = (
         const mw = (m.w / layer.cropArea.w) * pw;
         const mh = (m.h / layer.cropArea.h) * ph;
 
-        if (m.type === "circle") ctx.ellipse(mx + mw/2, my + mh/2, mw/2, mh/2, 0, 0, Math.PI * 2);
-        else if (m.type === "freeform" && m.points) {
+        if (m.type === "circle") {
+          ctx.ellipse(mx + mw/2, my + mh/2, mw/2, mh/2, 0, 0, Math.PI * 2);
+        } else if (m.type === "triangle") {
+          ctx.moveTo(mx + mw / 2, my);
+          ctx.lineTo(mx + mw, my + mh);
+          ctx.lineTo(mx, my + mh);
+          ctx.closePath();
+        } else if (m.type === "star") {
+          const cx = mx + mw / 2;
+          const cy = my + mh / 2;
+          const spikes = 5;
+          const outerRadius = Math.min(mw, mh) / 2;
+          const innerRadius = outerRadius * 0.4;
+          let rot = (Math.PI / 2) * 3;
+          const step = Math.PI / spikes;
+          ctx.moveTo(cx, cy - outerRadius);
+          for (let i = 0; i < spikes; i++) {
+            let x = cx + Math.cos(rot) * outerRadius;
+            let y = cy + Math.sin(rot) * outerRadius;
+            ctx.lineTo(x, y);
+            rot += step;
+            x = cx + Math.cos(rot) * innerRadius;
+            y = cy + Math.sin(rot) * innerRadius;
+            ctx.lineTo(x, y);
+            rot += step;
+          }
+          ctx.closePath();
+        } else if (m.type === "freeform" && m.points) {
           m.points.forEach((p, i) => {
             const lx = px + ((p.x - layer.cropArea.x) / layer.cropArea.w) * pw;
             const ly = py + ((p.y - layer.cropArea.y) / layer.cropArea.h) * ph;
             if (i === 0) ctx.moveTo(lx, ly); else ctx.lineTo(lx, ly);
           });
           ctx.closePath();
+        } else {
+          ctx.rect(mx, my, mw, mh);
         }
-        else ctx.rect(mx, my, mw, mh);
         ctx.fill();
       });
     } else {
@@ -410,6 +541,31 @@ export const renderProgram = (
           regionCtx.beginPath();
           if (m.type === "circle") {
             regionCtx.ellipse(mx + mw / 2, my + mh / 2, mw / 2, mh / 2, 0, 0, Math.PI * 2);
+          } else if (m.type === "triangle") {
+            regionCtx.moveTo(mx + mw / 2, my);
+            regionCtx.lineTo(mx + mw, my + mh);
+            regionCtx.lineTo(mx, my + mh);
+            regionCtx.closePath();
+          } else if (m.type === "star") {
+            const cx = mx + mw / 2;
+            const cy = my + mh / 2;
+            const spikes = 5;
+            const outerRadius = Math.min(mw, mh) / 2;
+            const innerRadius = outerRadius * 0.4;
+            let rot = (Math.PI / 2) * 3;
+            const step = Math.PI / spikes;
+            regionCtx.moveTo(cx, cy - outerRadius);
+            for (let i = 0; i < spikes; i++) {
+              let x = cx + Math.cos(rot) * outerRadius;
+              let y = cy + Math.sin(rot) * outerRadius;
+              regionCtx.lineTo(x, y);
+              rot += step;
+              x = cx + Math.cos(rot) * innerRadius;
+              y = cy + Math.sin(rot) * innerRadius;
+              regionCtx.lineTo(x, y);
+              rot += step;
+            }
+            regionCtx.closePath();
           } else if (m.type === "freeform" && m.points && m.points.length > 0) {
             m.points.forEach((p, pidx) => {
               const px = ((p.x - layer.cropArea.x) / layer.cropArea.w) * lw;

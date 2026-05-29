@@ -1,7 +1,7 @@
 export interface MaskShape {
   id: string;
   name: string;
-  type: "rect" | "circle" | "freeform";
+  type: "rect" | "circle" | "freeform" | "triangle" | "star";
   x: number;
   y: number;
   w: number;
@@ -20,7 +20,7 @@ export interface Layer {
   canvasPos: { x: number; y: number; w: number; h: number };
   locked: boolean;
   visible: boolean;
-  maskShape?: "square" | "circle" | "freeform";
+  maskShape?: "square" | "circle" | "freeform" | "triangle" | "star";
   maskPoints?: { x: number; y: number }[];
   maskBase64?: string;
   masks?: MaskShape[];
@@ -30,6 +30,7 @@ export interface Layer {
 }
 
 export interface Preset {
+  id?: string;
   game: string;
   presetName: string;
   sourceResolution: { w: number; h: number };

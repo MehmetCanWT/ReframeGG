@@ -28,7 +28,7 @@ export interface ReframeLayer {
   masks: MaskShape[];
 }
 
-export type EditorTool = "select" | "rect" | "circle" | "freeform";
+export type EditorTool = "select" | "rect" | "circle" | "freeform" | "triangle" | "star";
 
 export interface ModalState {
   type: "alert" | "confirm" | "prompt";

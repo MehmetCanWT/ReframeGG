@@ -24,7 +24,6 @@ const CustomSlider: React.FC<SliderProps> = React.memo(({
   label, value, min, max, step = 1, suffix = "px", onChange, onSnap
 }) => {
   const trackRef = useRef<HTMLDivElement>(null);
-  const dragging = useRef(false);
 
   // Clamp + snap helper
   const applyValue = useCallback((raw: number) => {
@@ -46,24 +45,33 @@ const CustomSlider: React.FC<SliderProps> = React.memo(({
     applyValue(min + ratio * (max - min));
   }, [min, max, applyValue]);
 
-  const onPointerDown = useCallback((e: React.PointerEvent) => {
+  const onPointerDown = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
     e.preventDefault();
     e.stopPropagation();
-    dragging.current = true;
-    (e.target as HTMLElement).setPointerCapture(e.pointerId);
-    pointerToValue(e.clientX);
-  }, [pointerToValue]);
+    const track = trackRef.current;
+    if (!track) return;
 
-  const onPointerMove = useCallback((e: React.PointerEvent) => {
-    if (!dragging.current) return;
-    e.preventDefault();
-    pointerToValue(e.clientX);
-  }, [pointerToValue]);
+    // Set pointer capture to ensure we receive events
+    track.setPointerCapture(e.pointerId);
 
-  const onPointerUp = useCallback((e: React.PointerEvent) => {
-    dragging.current = false;
-    (e.target as HTMLElement).releasePointerCapture(e.pointerId);
-  }, []);
+    // Initial seek
+    pointerToValue(e.clientX);
+
+    const handlePointerMove = (moveEvent: PointerEvent) => {
+      pointerToValue(moveEvent.clientX);
+    };
+
+    const handlePointerUp = (upEvent: PointerEvent) => {
+      try {
+        track.releasePointerCapture(upEvent.pointerId);
+      } catch (err) {}
+      window.removeEventListener("pointermove", handlePointerMove);
+      window.removeEventListener("pointerup", handlePointerUp);
+    };
+
+    window.addEventListener("pointermove", handlePointerMove);
+    window.addEventListener("pointerup", handlePointerUp);
+  }, [pointerToValue]);
 
   // +/- step buttons
   const increment = useCallback(() => applyValue(value + step), [value, step, applyValue]);
@@ -78,7 +86,7 @@ const CustomSlider: React.FC<SliderProps> = React.memo(({
       {/* Label row */}
       <div className="flex justify-between text-[10px] font-bold text-zinc-400">
         <span>{label}</span>
-        <span className="text-orange-500/90 font-mono">{displayValue}{suffix}</span>
+        <span className="text-pink-500/90 font-mono">{displayValue}{suffix}</span>
       </div>
 
       {/* Slider row: [-] [track] [+] */}
@@ -98,9 +106,6 @@ const CustomSlider: React.FC<SliderProps> = React.memo(({
           ref={trackRef}
           className="ec-track-wrapper"
           onPointerDown={onPointerDown}
-          onPointerMove={onPointerMove}
-          onPointerUp={onPointerUp}
-          onPointerCancel={onPointerUp}
         >
           {/* Background track */}
           <div className="ec-track-bg" />
@@ -140,10 +145,17 @@ export const EffectControls: React.FC<EffectControlsProps> = React.memo(({
 
   const layerW = selectedLayer.cropArea.w * selectedLayer.scale;
   const layerH = selectedLayer.cropArea.h * selectedLayer.scale;
+  // Account for baseScale offset in snap targets
+  const baseScaleVal = selectedLayer.baseScale ?? selectedLayer.scale;
+  const offsetX = (selectedLayer.cropArea.w * (selectedLayer.scale - baseScaleVal)) / 2;
+  const offsetY = (selectedLayer.cropArea.h * (selectedLayer.scale - baseScaleVal)) / 2;
+  // Snap helper: convert layer.x to drawn position, snap, convert back
+  const snapPosX = (v: number) => snapValue(v - offsetX, [0, 540 - layerW/2, 1080 - layerW], 40) + offsetX;
+  const snapPosY = (v: number) => snapValue(v - offsetY, [0, 960 - layerH/2, 1920 - layerH], 40) + offsetY;
 
   const ControlGroup = ({ title, children }: { title: string, children: React.ReactNode }) => (
     <div className="flex flex-col gap-1.5">
-      <span className="text-[9px] font-black tracking-[0.15em] text-orange-500/80 uppercase border-b border-white/5 pb-0.5">
+      <span className="text-[9px] font-black tracking-[0.15em] text-pink-500/80 uppercase border-b border-white/5 pb-0.5">
         {title}
       </span>
       <div className="flex flex-col gap-2">
@@ -156,7 +168,7 @@ export const EffectControls: React.FC<EffectControlsProps> = React.memo(({
     <div className="flex-1 flex flex-col bg-[#111215] min-h-0 overflow-hidden">
       <div className="h-[38px] flex-shrink-0 bg-[#16181d] px-4 flex items-center border-b border-white/5">
         <span className="text-[10px] font-black uppercase tracking-widest text-zinc-400 flex items-center gap-1.5">
-          <Sliders size={11} className="text-orange-500" />
+          <Sliders size={11} className="text-pink-500" />
           Effect Controls
         </span>
       </div>
@@ -165,11 +177,11 @@ export const EffectControls: React.FC<EffectControlsProps> = React.memo(({
         <div className="grid grid-cols-3 gap-4 max-w-[1200px] pb-4">
           <ControlGroup title="Transform">
             <CustomSlider label="Position X" value={selectedLayer.x} min={-1000} max={2000} 
-              onSnap={(v: number) => snapValue(v, [0, 540 - layerW/2, 1080 - layerW], 40)}
+              onSnap={snapPosX}
               onChange={(v: number) => onUpdateLayer(selectedLayer.id, { x: v })} />
             
             <CustomSlider label="Position Y" value={selectedLayer.y} min={-1000} max={2000} 
-              onSnap={(v: number) => snapValue(v, [0, 960 - layerH/2, 1920 - layerH], 40)}
+              onSnap={snapPosY}
               onChange={(v: number) => onUpdateLayer(selectedLayer.id, { y: v })} />
             
             <CustomSlider label="Scaling" value={selectedLayer.scale} min={0.1} max={4.0} step={0.01} suffix="x"
@@ -197,7 +209,7 @@ export const EffectControls: React.FC<EffectControlsProps> = React.memo(({
           ) : (
             <ControlGroup title="Crop Area">
               <div className="text-zinc-500 text-[9px] font-black uppercase leading-normal tracking-wide bg-[#16181d] border border-white/5 rounded-xl p-3.5 select-none text-center">
-                Crop area is managed automatically by the mask shape. <br/><span className="text-orange-500/90">Use Transform controls</span> on the left to scale and position your overlay.
+                Crop area is managed automatically by the mask shape. <br/><span className="text-pink-500/90">Use Transform controls</span> on the left to scale and position your overlay.
               </div>
             </ControlGroup>
           )}

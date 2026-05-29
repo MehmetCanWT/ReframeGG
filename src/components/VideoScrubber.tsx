@@ -124,7 +124,7 @@ export function VideoScrubber({
       <button
         onClick={() => setIsPlaying(!isPlaying)}
         className={`w-8 h-8 flex-shrink-0 rounded-lg flex items-center justify-center transition cursor-pointer ${
-          isPlaying ? "bg-orange-600 text-white shadow-[0_0_12px_rgba(234,88,12,0.4)]" : "bg-[#1f2127] text-zinc-300"
+          isPlaying ? "bg-pink-600 text-white shadow-[0_0_12px_rgba(236,72,153,0.4)]" : "bg-[#1f2127] text-zinc-300"
         }`}
       >
         {isPlaying ? <Pause size={14} /> : <Play size={14} />}
@@ -141,7 +141,7 @@ export function VideoScrubber({
         <div className="absolute left-0 right-0 h-1 rounded bg-white/5" />
         
         <div 
-          className="absolute h-1 bg-orange-600/40 rounded pointer-events-none"
+          className="absolute h-1 bg-pink-600/40 rounded pointer-events-none"
           style={{
             left: `${(trimStart / duration) * 100}%`,
             width: `${((trimEnd - trimStart) / duration) * 100}%`,
@@ -149,13 +149,13 @@ export function VideoScrubber({
         />
 
         <div 
-          className="absolute h-4 w-0.5 bg-orange-500 z-10 pointer-events-none"
+          className="absolute h-4 w-0.5 bg-pink-500 z-10 pointer-events-none"
           style={{ left: `${(currentTime / duration) * 100}%` }}
         />
 
         {/* Trim Start Handle */}
         <div 
-          className="absolute w-3 h-6 bg-orange-600 hover:bg-orange-500 border border-orange-400/40 rounded-l cursor-ew-resize flex items-center justify-center select-none shadow-[0_0_10px_rgba(234,88,12,0.4)] transition-colors active:scale-105 z-30 touch-none"
+          className="absolute w-3 h-6 bg-pink-600 hover:bg-pink-500 border border-pink-400/40 rounded-l cursor-ew-resize flex items-center justify-center select-none shadow-[0_0_10px_rgba(236,72,153,0.4)] transition-colors active:scale-105 z-30 touch-none"
           style={{
             left: `${(trimStart / duration) * 100}%`,
             transform: 'translateX(-100%)',
@@ -167,7 +167,7 @@ export function VideoScrubber({
 
         {/* Trim End Handle */}
         <div 
-          className="absolute w-3 h-6 bg-orange-600 hover:bg-orange-500 border border-orange-400/40 rounded-r cursor-ew-resize flex items-center justify-center select-none shadow-[0_0_10px_rgba(234,88,12,0.4)] transition-colors active:scale-105 z-30 touch-none"
+          className="absolute w-3 h-6 bg-pink-600 hover:bg-pink-500 border border-pink-400/40 rounded-r cursor-ew-resize flex items-center justify-center select-none shadow-[0_0_10px_rgba(236,72,153,0.4)] transition-colors active:scale-105 z-30 touch-none"
           style={{
             left: `${(trimEnd / duration) * 100}%`,
           }}

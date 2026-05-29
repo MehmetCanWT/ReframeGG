@@ -1,6 +1,6 @@
 [package]
 name = "reframegg"
-version = "0.1.1"
+version = "0.1.2"
 description = "ReframeGG video compositor"
 authors = ["Mehmet Can"]
 edition = "2021"

@@ -25,20 +25,20 @@ export const LayerPanel: React.FC<LayerPanelProps> = ({
     <div className="w-[320px] border-r border-white/6 flex flex-col bg-[#111215] overflow-hidden">
       <div className="h-[38px] bg-[#16181d] px-4 flex items-center justify-between border-b border-white/5">
         <span className="text-[10px] font-black uppercase tracking-widest text-zinc-400 flex items-center gap-1.5">
-          <Layers size={11} className="text-[#ea580c]" />
+          <Layers size={11} className="text-[#ec4899]" />
           Layer Panel
         </span>
 
         <div className="flex items-center gap-1">
           <button
             onClick={() => onAddLayer("crop")}
-            className="px-2 py-1 text-[9px] font-extrabold bg-[#1f2127] hover:bg-[#ea580c]/10 hover:text-[#ea580c] border border-white/5 hover:border-[#ea580c]/30 rounded transition cursor-pointer"
+            className="px-2 py-1 text-[9px] font-extrabold bg-[#1f2127] hover:bg-[#ec4899]/10 hover:text-[#ec4899] border border-white/5 hover:border-[#ec4899]/30 rounded transition cursor-pointer"
           >
             New Layer
           </button>
           <button
             onClick={() => onAddLayer("mask")}
-            className="px-2 py-1 text-[9px] font-extrabold bg-[#ea580c]/15 hover:bg-[#ea580c]/25 text-[#ea580c] border border-[#ea580c]/30 rounded transition cursor-pointer"
+            className="px-2 py-1 text-[9px] font-extrabold bg-[#ec4899]/15 hover:bg-[#ec4899]/25 text-[#ec4899] border border-[#ec4899]/30 rounded transition cursor-pointer"
           >
             New Mask
           </button>
@@ -55,7 +55,7 @@ export const LayerPanel: React.FC<LayerPanelProps> = ({
               onClick={() => onSelectLayer(layer.id)}
               className={`flex items-center justify-between p-2.5 rounded-lg border transition cursor-pointer ${
                 isSelected 
-                  ? "bg-orange-600/10 border-[#ea580c] text-white" 
+                  ? "bg-pink-600/10 border-[#ec4899] text-white" 
                   : "bg-[#15171c] hover:bg-[#181a20] border-white/5 text-zinc-400"
               }`}
             >

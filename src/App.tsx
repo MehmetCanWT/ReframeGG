@@ -87,20 +87,22 @@ export default function App() {
     }
   }, [isPlaying, trimStart, trimEnd]);
 
-  // Playback timer ticker (approx 100ms updates)
+  // Playback timer ticker (approx 30ms updates for highly responsive looping)
   useEffect(() => {
     let interval: any;
     if (isPlaying) {
       interval = setInterval(() => {
         const master = masterVideoRef.current;
         if (master) {
-          setCurrentTime(master.currentTime);
-          if (master.currentTime >= trimEnd) {
+          const curr = master.currentTime;
+          if (curr >= trimEnd || curr < trimStart) {
             master.currentTime = trimStart;
             setCurrentTime(trimStart);
+          } else {
+            setCurrentTime(curr);
           }
         }
-      }, 100);
+      }, 30);
     }
     return () => clearInterval(interval);
   }, [isPlaying, trimStart, trimEnd]);
