@@ -37,6 +37,16 @@
 
 <br/>
 
+### 📢 Latest Updates (v0.1.2)
+- 🖥️ **Custom Frameless Titlebar**: Outdated OS borders have been replaced with a premium, sleek custom application header with full window dragging and custom minimize, maximize, and close controls.
+- 🧲 **Magnetic Pen Snapping**: Added path snapping to the Vector Pen Tool — hovering within 20px of the first point automatically snaps, and a single click closes the path cleanly.
+- 📂 **Flexible Save Destination**: You can now choose exactly where to save and name your output video when clicking "Render Video" via native OS dialogs.
+- 🌸 **Premium Pink Theme**: ReframeGG has transitioned from its classic orange highlight to a sweet, high-fidelity premium rose-pink design.
+- 📐 **Even-Numbered Scaling Alignment**: Forced even dimensions on all layers to prevent H.264/FFmpeg render pipeline failures, and added dynamic mask resizing during merge operations.
+- 🛡️ **Tauri v2 Security Permissions**: Standardized and optimized the capabilities map for local window controls.
+
+<br/>
+
 ---
 
 </div>

@@ -40,7 +40,7 @@ fn reframe_video(
     output_fps: i32,
     background_mode: String,
     use_gpu: bool,
-    output_ext: String,
+    output_path: String,
     on_event: Channel<RenderEvent>,
 ) {
     std::thread::spawn(move || {
@@ -54,10 +54,20 @@ fn reframe_video(
             output_fps,
             background_mode,
             use_gpu,
-            output_ext,
+            output_path,
             on_event,
         );
     });
+}
+
+#[tauri::command]
+fn select_output_file(default_name: String) -> Option<String> {
+    let file = FileDialog::new()
+        .set_file_name(&default_name)
+        .add_filter("MP4 Video", &["mp4"])
+        .save_file();
+    
+    file.map(|path| path.to_string_lossy().to_string())
 }
 
 #[tauri::command]
@@ -73,7 +83,8 @@ pub fn run() {
             select_video_file,
             get_video_info,
             reframe_video,
-            cancel_render
+            cancel_render,
+            select_output_file
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

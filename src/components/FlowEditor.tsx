@@ -329,12 +329,29 @@ export function FlowEditor({
 
   const handleRender = async () => {
     try {
+      // 1. Generate default filename
+      const cleanVideoName = videoName.substring(0, videoName.lastIndexOf('.')) || videoName;
+      const defaultName = `${cleanVideoName}_portrait_reframe.mp4`;
+
+      // 2. Open Save File Dialog via Tauri command
+      const outputPath = await invoke<string | null>("select_output_file", { defaultName });
+      if (!outputPath) {
+        // User cancelled the save dialog
+        return;
+      }
+
       setRenderProgress({ progress: 0, status: "Initializing..." });
       const onEvent = new Channel<RenderEvent>();
       onEvent.onmessage = (event: RenderEvent) => {
         if (event.type === "Progress") setRenderProgress(event.data);
-        else if (event.type === "Complete") { setRenderProgress(null); showModal("alert", "Success", "Render complete! File saved."); }
-        else if (event.type === "Error") { setRenderProgress(null); showModal("alert", "Error", "Render failed: " + event.data.message); }
+        else if (event.type === "Complete") { 
+          setRenderProgress(null); 
+          showModal("alert", "Success", `Render complete! Video saved to:\n${event.data.path}`); 
+        }
+        else if (event.type === "Error") { 
+          setRenderProgress(null); 
+          showModal("alert", "Error", "Render failed: " + event.data.message); 
+        }
       };
 
       const backendLayers = layers.map(l => ({
@@ -363,7 +380,7 @@ export function FlowEditor({
 
       await invoke("reframe_video", {
         videoPath, layers: backendLayers, trimStart, trimEnd,
-        outputRes: "1080x1920", outputFps: 60, backgroundMode: "blur", useGpu: true, outputExt: "mp4", onEvent
+        outputRes: "1080x1920", outputFps: 60, backgroundMode: "blur", useGpu: true, outputPath, onEvent
       });
     } catch (e) {
       setRenderProgress(null);

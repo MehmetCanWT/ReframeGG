@@ -117,7 +117,7 @@ pub fn run_reframer(
     output_fps: i32,
     background_mode: String,
     use_gpu: bool,
-    output_ext: String,
+    output_path: String,
     on_event: Channel<RenderEvent>,
 ) {
     run_reframer_internal(
@@ -130,7 +130,7 @@ pub fn run_reframer(
         output_fps,
         background_mode,
         use_gpu,
-        output_ext,
+        output_path,
         on_event,
     );
 }
@@ -145,7 +145,7 @@ fn run_reframer_internal(
     output_fps: i32,
     background_mode: String,
     use_gpu: bool,
-    output_ext: String,
+    output_path: String,
     on_event: Channel<RenderEvent>,
 ) {
     CANCEL_FLAG.store(false, Ordering::SeqCst);
@@ -167,9 +167,7 @@ fn run_reframer_internal(
     let input_path = Path::new(&video_path);
     let parent = input_path.parent().unwrap_or_else(|| Path::new("."));
     let stem = input_path.file_stem().unwrap_or_default().to_string_lossy();
-    let ext_clean = output_ext.trim_start_matches('.');
-    let output_file_path = parent.join(format!("{}_portrait_reframe.{}", stem, ext_clean));
-    let output_str = output_file_path.to_string_lossy().to_string();
+    let output_str = output_path.clone();
 
     // 1. Build FFMPEG Complex Filter Complex String
     // We will scale everything based on target dimensions (out_w, out_h)
@@ -466,7 +464,7 @@ fn run_reframer_internal(
                     output_fps,
                     background_mode,
                     false, // fallback to CPU
-                    output_ext,
+                    output_path,
                     on_event,
                 );
                 return;
@@ -481,6 +479,9 @@ fn run_reframer_internal(
     for line_result in reader.lines() {
         if CANCEL_FLAG.load(Ordering::SeqCst) {
             let _ = child.kill();
+            for path in &dynamic_inputs {
+                let _ = std::fs::remove_file(Path::new(path));
+            }
             let _ = on_event.send(RenderEvent::Error { message: "Cancelled by user.".to_string() });
             return;
         }
@@ -512,6 +513,11 @@ fn run_reframer_internal(
         let _ = on_event.send(RenderEvent::Complete { path: output_str });
     } else {
         let _ = on_event.send(RenderEvent::Error { message: "FFmpeg reported an error during render.".to_string() });
+    }
+
+    // Cleanup temporary mask/censor PNG files
+    for path in &dynamic_inputs {
+        let _ = std::fs::remove_file(Path::new(path));
     }
     }
 
