@@ -343,14 +343,14 @@ export function FlowEditor({
         cropArea: {
           x: Math.round(l.cropArea.x),
           y: Math.round(l.cropArea.y),
-          w: Math.round(l.cropArea.w),
-          h: Math.round(l.cropArea.h)
+          w: Math.round(l.cropArea.w / 2) * 2,
+          h: Math.round(l.cropArea.h / 2) * 2
         },
         canvasPos: {
           x: Math.round(l.x),
           y: Math.round(l.y),
-          w: Math.round(l.cropArea.w * l.scale),
-          h: Math.round(l.cropArea.h * l.scale)
+          w: Math.round((l.cropArea.w * l.scale) / 2) * 2,
+          h: Math.round((l.cropArea.h * l.scale) / 2) * 2
         },
         locked: false,
         visible: l.visible,
