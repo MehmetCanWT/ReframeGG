@@ -83,11 +83,13 @@ export default function LandingClient({ screenshots }: LandingClientProps) {
               <GithubIcon size={16} />
             </a>
             <a
-              href="#getting-started"
+              href="https://github.com/MehmetCanWT/ReframeGG/releases"
+              target="_blank"
+              rel="noopener noreferrer"
               className="px-4 py-2 text-[10px] font-black tracking-widest uppercase bg-gradient-to-r from-pink-600 to-fuchsia-500 hover:from-pink-500 hover:to-fuchsia-400 text-white rounded-lg transition duration-300 shadow-[0_4px_15px_rgba(236,72,153,0.2)] hover:scale-[1.02] active:scale-100 flex items-center gap-1.5"
             >
               <Download size={12} />
-              GET STARTED
+              DOWNLOAD NOW
             </a>
           </div>
         </div>
@@ -115,11 +117,19 @@ export default function LandingClient({ screenshots }: LandingClientProps) {
 
         <div className="flex flex-col sm:flex-row items-center justify-center gap-4">
           <a
-            href="#getting-started"
+            href="https://github.com/MehmetCanWT/ReframeGG/releases"
+            target="_blank"
+            rel="noopener noreferrer"
             className="w-full sm:w-auto px-8 py-3.5 text-xs font-black tracking-widest uppercase bg-gradient-to-r from-pink-600 to-fuchsia-500 hover:from-pink-500 hover:to-fuchsia-400 text-white rounded-xl transition duration-300 shadow-[0_4px_20px_rgba(236,72,153,0.3)] hover:scale-[1.02] flex items-center justify-center gap-2"
           >
             <Download size={14} />
             DOWNLOAD NOW (v0.1.2)
+          </a>
+          <a
+            href="#getting-started"
+            className="w-full sm:w-auto px-8 py-3.5 text-xs font-black tracking-widest uppercase bg-zinc-900 hover:bg-zinc-800 border border-white/5 hover:border-pink-500/30 text-zinc-300 hover:text-white rounded-xl transition duration-300 flex items-center justify-center gap-2"
+          >
+            GETTING STARTED
           </a>
           <a
             href="https://github.com/MehmetCanWT/ReframeGG"
@@ -128,7 +138,7 @@ export default function LandingClient({ screenshots }: LandingClientProps) {
             className="w-full sm:w-auto px-8 py-3.5 text-xs font-black tracking-widest uppercase bg-zinc-900 hover:bg-zinc-800 border border-white/5 hover:border-pink-500/30 text-zinc-300 hover:text-white rounded-xl transition duration-300 flex items-center justify-center gap-2"
           >
             <GithubIcon size={14} />
-            VIEW SOURCE CODE
+            VIEW SOURCE
           </a>
         </div>
       </section>
@@ -306,13 +316,22 @@ export default function LandingClient({ screenshots }: LandingClientProps) {
 
           <div className="flex flex-col sm:flex-row items-center justify-center gap-4">
             <a
-              href="https://github.com/MehmetCanWT/ReframeGG"
+              href="https://github.com/MehmetCanWT/ReframeGG/releases"
               target="_blank"
               rel="noopener noreferrer"
               className="w-full sm:w-auto px-8 py-3.5 bg-pink-600 hover:bg-pink-500 text-white font-black text-xs tracking-widest uppercase rounded-xl transition duration-300 flex items-center justify-center gap-2 shadow-lg shadow-pink-600/30"
             >
+              <Download size={14} />
+              DOWNLOAD LATEST RELEASE
+            </a>
+            <a
+              href="https://github.com/MehmetCanWT/ReframeGG"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="w-full sm:w-auto px-8 py-3.5 bg-zinc-900 hover:bg-zinc-800 text-zinc-300 hover:text-white font-black text-xs tracking-widest uppercase rounded-xl border border-white/5 hover:border-pink-500/30 transition duration-300 flex items-center justify-center gap-2"
+            >
               <GithubIcon size={14} />
-              CLONE REPO ON GITHUB
+              CLONE REPOSITORY
             </a>
             <a
               href="https://github.com/MehmetCanWT/ReframeGG/issues"
