@@ -39,8 +39,10 @@
 
 ### 📢 Latest Updates (v0.1.2)
 - 🖥️ **Custom Frameless Titlebar**: Outdated OS borders have been replaced with a premium, sleek custom application header with full window dragging and custom minimize, maximize, and close controls.
+- ⚙️ **Interactive Render Settings**: Export button now opens a high-fidelity dropdown/selection modal to customize output resolution (Portrait 1080p, Portrait 720p, Square, Landscape), framerate (30/60 FPS), background fill (blurred gameplay vs. black cinematic bars), and toggle GPU hardware acceleration.
+- 🧹 **Automatic Mask Cleanup**: Temporary `.png` mask files written during rendering are now immediately deleted upon render completion, failure, or cancellation using a robust Rust RAII drop guard, keeping your workspace (and desktop) perfectly tidy!
 - 🧲 **Magnetic Pen Snapping**: Added path snapping to the Vector Pen Tool — hovering within 20px of the first point automatically snaps, and a single click closes the path cleanly.
-- 📂 **Flexible Save Destination**: You can now choose exactly where to save and name your output video when clicking "Render Video" via native OS dialogs.
+- 📂 **Flexible Save Destination**: Integrated with native OS file dialogs to prompt you exactly where to save and name your output video when clicking "Export Video".
 - 🌸 **Premium Pink Theme**: ReframeGG has transitioned from its classic orange highlight to a sweet, high-fidelity premium rose-pink design.
 - 📐 **Even-Numbered Scaling Alignment**: Forced even dimensions on all layers to prevent H.264/FFmpeg render pipeline failures, and added dynamic mask resizing during merge operations.
 - 🛡️ **Tauri v2 Security Permissions**: Standardized and optimized the capabilities map for local window controls.

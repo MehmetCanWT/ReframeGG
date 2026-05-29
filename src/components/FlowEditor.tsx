@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import { invoke, Channel, convertFileSrc } from "@tauri-apps/api/core";
-import { Trash2 } from "lucide-react";
+import { Trash2, Settings, X } from "lucide-react";
 import { ReframeLayer, EditorTool, ModalState, RenderEvent } from "../types";
 import { defaultPresets, Preset, MaskShape } from "../presets";
 import { VideoScrubber } from "./VideoScrubber";
@@ -53,6 +53,13 @@ export function FlowEditor({
   const [mouseHoverPos, setMouseHoverPos] = useState<{ x: number, y: number } | null>(null);
   const [drawingPoints, setDrawingPoints] = useState<{ x: number, y: number }[]>([]);
   const [renderProgress, setRenderProgress] = useState<{ progress: number, status: string } | null>(null);
+
+  // ─── RENDER SETTINGS STATE ───
+  const [showRenderSettings, setShowRenderSettings] = useState(false);
+  const [renderRes, setRenderRes] = useState("1080x1920");
+  const [renderFps, setRenderFps] = useState(60);
+  const [renderUseGpu, setRenderUseGpu] = useState(true);
+  const [renderBgMode, setRenderBgMode] = useState("blur");
   const [customPresets, setCustomPresets] = useState<Preset[]>(() => {
     const saved = localStorage.getItem("customPresets_v2");
     const parsed = saved ? JSON.parse(saved) : [];
@@ -327,7 +334,7 @@ export function FlowEditor({
     localStorage.setItem("customPresets_v2", JSON.stringify(next));
   }, [customPresets]);
 
-  const handleRender = async () => {
+  const handleRender = async (res: string, fps: number, useGpu: boolean, bgMode: string) => {
     try {
       // 1. Generate default filename
       const cleanVideoName = videoName.substring(0, videoName.lastIndexOf('.')) || videoName;
@@ -380,7 +387,7 @@ export function FlowEditor({
 
       await invoke("reframe_video", {
         videoPath, layers: backendLayers, trimStart, trimEnd,
-        outputRes: "1080x1920", outputFps: 60, backgroundMode: "blur", useGpu: true, outputPath, onEvent
+        outputRes: res, outputFps: fps, backgroundMode: bgMode, useGpu, outputPath, onEvent
       });
     } catch (e) {
       setRenderProgress(null);
@@ -821,7 +828,7 @@ export function FlowEditor({
   return (
     <div className="w-screen h-screen flex flex-col bg-[#0b0c0e] text-[#e4e4e7] overflow-hidden select-none font-sans">
       <video key={videoPath} ref={masterVideoRef} src={convertFileSrc(videoPath)} className="hidden" loop muted playsInline autoPlay={isPlaying} />
-      <div className="flex-shrink-0"><Header videoName={videoName} onSavePreset={handleSavePreset} onOpenPresets={() => setShowPresetLibrary(true)} onRender={handleRender} /></div>
+      <div className="flex-shrink-0"><Header videoName={videoName} onSavePreset={handleSavePreset} onOpenPresets={() => setShowPresetLibrary(true)} onRender={() => setShowRenderSettings(true)} /></div>
       <div className="flex-1 overflow-hidden">
         <MonitorPanel editorTool={editorTool} setEditorTool={setEditorTool} sourceCanvasRef={sourceCanvasRef} silhouetteCanvasRef={silhouetteCanvasRef} programCanvasRef={programCanvasRef} onSourceMouseDown={handleSourceMouseDown} onSourceDoubleClick={handleSourceDoubleClick} onSourceMouseMove={handleSourceMouseMove} onSourceMouseLeave={() => setMouseHoverPos(null)} onSourceWheel={handleSourceWheel} onSourceZoomReset={handleSourceZoomReset} sourceZoom={sourceZoom} sourcePanX={sourcePanX} sourcePanY={sourcePanY} onSilhouetteMouseDown={handleSilhouetteMouseDown} layers={layers} selectedLayerId={selectedLayerId} drawingPoints={drawingPoints} mouseHoverPos={mouseHoverPos} CANVAS_W={CANVAS_W} CANVAS_H={CANVAS_H} footerHeight={footerHeight} />
       </div>
@@ -901,6 +908,138 @@ export function FlowEditor({
             <div className="w-full h-2 bg-zinc-900 rounded-full overflow-hidden mb-2"><div className="h-full bg-pink-600 transition-all duration-300" style={{ width: `${renderProgress.progress}%` }} /></div>
             <div className="text-pink-500 font-mono text-xs">{Math.round(renderProgress.progress)}%</div>
             <button onClick={() => invoke("cancel_render")} className="mt-4 px-6 py-2 bg-red-600/20 hover:bg-red-600 text-red-500 hover:text-white rounded-xl text-[10px] font-black transition">CANCEL RENDER</button>
+          </div>
+        </div>
+      )}
+      {showRenderSettings && (
+        <div className="fixed inset-0 z-[1000] flex items-center justify-center bg-black/85 backdrop-blur-md animate-in fade-in duration-200">
+          <div className="w-[460px] bg-[#111215] border border-white/10 rounded-2xl p-6 shadow-[0_20px_50px_rgba(236,72,153,0.15)] relative animate-in zoom-in-95 duration-200">
+            <button 
+              onClick={() => setShowRenderSettings(false)} 
+              className="absolute top-4 right-4 text-zinc-500 hover:text-white transition cursor-pointer p-1 hover:bg-white/5 rounded-md"
+            >
+              <X size={16} />
+            </button>
+
+            <div className="flex items-center gap-2 mb-5">
+              <Settings className="text-pink-500 animate-spin-slow" size={18} />
+              <h2 className="text-sm font-black text-white uppercase tracking-widest">Render Settings</h2>
+            </div>
+
+            <div className="space-y-4 mb-6">
+              {/* Output Resolution */}
+              <div>
+                <label className="text-[10px] font-black text-zinc-400 uppercase tracking-wider block mb-2">Output Resolution</label>
+                <div className="grid grid-cols-2 gap-2">
+                  {[
+                    { value: "1080x1920", label: "Portrait (1080x1920)", desc: "TikTok / Reels [9:16]" },
+                    { value: "720x1280", label: "Portrait HD (720x1280)", desc: "Fast Render [9:16]" },
+                    { value: "1080x1080", label: "Square (1080x1080)", desc: "Instagram / Feed [1:1]" },
+                    { value: "1920x1080", label: "Landscape (1920x1080)", desc: "YouTube Standard [16:9]" },
+                  ].map((res) => (
+                    <button
+                      key={res.value}
+                      onClick={() => setRenderRes(res.value)}
+                      className={`flex flex-col items-start p-2.5 rounded-xl border text-left cursor-pointer transition ${
+                        renderRes === res.value
+                          ? "bg-pink-600/10 border-pink-500 text-white"
+                          : "bg-zinc-900 border-white/5 hover:border-white/20 text-zinc-400"
+                      }`}
+                    >
+                      <span className="text-[11px] font-black">{res.label}</span>
+                      <span className="text-[9px] text-zinc-500 font-semibold mt-0.5">{res.desc}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Frame Rate & Hardware Acceleration */}
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="text-[10px] font-black text-zinc-400 uppercase tracking-wider block mb-2">Frame Rate</label>
+                  <div className="flex bg-zinc-900 border border-white/5 p-1 rounded-xl gap-1">
+                    {[60, 30].map((fps) => (
+                      <button
+                        key={fps}
+                        onClick={() => setRenderFps(fps)}
+                        className={`flex-1 py-1.5 rounded-lg text-center font-black text-xs cursor-pointer transition ${
+                          renderFps === fps
+                            ? "bg-pink-600 text-white shadow-md shadow-pink-600/20"
+                            : "text-zinc-500 hover:text-zinc-300"
+                        }`}
+                      >
+                        {fps} FPS
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                <div>
+                  <label className="text-[10px] font-black text-zinc-400 uppercase tracking-wider block mb-2">GPU Acceleration</label>
+                  <div className="flex bg-zinc-900 border border-white/5 p-1 rounded-xl gap-1">
+                    {[
+                      { value: true, label: "GPU ON", desc: "NVIDIA NVENC" },
+                      { value: false, label: "CPU ONLY", desc: "Software x264" },
+                    ].map((mode) => (
+                      <button
+                        key={mode.value ? "on" : "off"}
+                        onClick={() => setRenderUseGpu(mode.value)}
+                        className={`flex-1 py-1.5 rounded-lg text-center font-black text-xs cursor-pointer transition ${
+                          renderUseGpu === mode.value
+                            ? "bg-pink-600 text-white shadow-md shadow-pink-600/20"
+                            : "text-zinc-500 hover:text-zinc-300"
+                        }`}
+                        title={mode.desc}
+                      >
+                        {mode.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </div>
+
+              {/* Background Mode */}
+              <div>
+                <label className="text-[10px] font-black text-zinc-400 uppercase tracking-wider block mb-2">Background Mode</label>
+                <div className="flex bg-zinc-900 border border-white/5 p-1 rounded-xl gap-1">
+                  {[
+                    { value: "blur", label: "Blurred Gameplay", desc: "High-end scaling & blur filter" },
+                    { value: "black", label: "Black Bars", desc: "Solid black cinematic filler" },
+                  ].map((bg) => (
+                    <button
+                      key={bg.value}
+                      onClick={() => setRenderBgMode(bg.value)}
+                      className={`flex-1 py-2 rounded-lg text-center font-black text-xs cursor-pointer transition ${
+                        renderBgMode === bg.value
+                          ? "bg-pink-600 text-white shadow-md shadow-pink-600/20"
+                          : "text-zinc-500 hover:text-zinc-300"
+                      }`}
+                    >
+                      <div className="text-[11px] font-black">{bg.label}</div>
+                      <div className="text-[8px] text-zinc-400/70 mt-0.5">{bg.desc}</div>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
+
+            <div className="flex gap-2">
+              <button
+                onClick={() => setShowRenderSettings(false)}
+                className="flex-1 py-2.5 bg-zinc-800 hover:bg-zinc-700 text-zinc-400 font-black text-[10px] rounded-xl uppercase tracking-widest transition cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => {
+                  setShowRenderSettings(false);
+                  handleRender(renderRes, renderFps, renderUseGpu, renderBgMode);
+                }}
+                className="flex-1 py-2.5 bg-pink-600 hover:bg-pink-500 text-white font-black text-[10px] rounded-xl uppercase tracking-widest shadow-lg shadow-pink-600/20 transition cursor-pointer"
+              >
+                Export Video
+              </button>
+            </div>
           </div>
         </div>
       )}

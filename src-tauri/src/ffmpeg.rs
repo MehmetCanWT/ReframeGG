@@ -11,6 +11,26 @@ lazy_static::lazy_static! {
     static ref CANCEL_FLAG: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
 }
 
+struct TempFileCleanup {
+    paths: Vec<String>,
+}
+
+impl Drop for TempFileCleanup {
+    fn drop(&mut self) {
+        for path in &self.paths {
+            let p = Path::new(path);
+            if p.exists() {
+                if let Err(e) = std::fs::remove_file(p) {
+                    println!("Failed to remove temp file {}: {}", path, e);
+                } else {
+                    println!("Successfully removed temp file {}", path);
+                }
+            }
+        }
+    }
+}
+
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Rect {
     pub x: i32,
@@ -169,6 +189,9 @@ fn run_reframer_internal(
     let stem = input_path.file_stem().unwrap_or_default().to_string_lossy();
     let output_str = output_path.clone();
 
+    let mut cleanup = TempFileCleanup { paths: Vec::new() };
+
+
     // 1. Build FFMPEG Complex Filter Complex String
     // We will scale everything based on target dimensions (out_w, out_h)
     let mut filter_complex = String::new();
@@ -264,7 +287,10 @@ fn run_reframer_internal(
             let mask_path = parent.join(format!("{}_mask_{}.png", stem, idx));
             if let Ok(bytes) = general_purpose::STANDARD.decode(b64) {
                 let _ = std::fs::write(&mask_path, bytes);
-                dynamic_inputs.push(mask_path.to_string_lossy().to_string());
+                let mask_str = mask_path.to_string_lossy().to_string();
+                dynamic_inputs.push(mask_str.clone());
+                cleanup.paths.push(mask_str);
+
                 
                 // 1. the cropped video (clean, no blur)
                 filter_complex.push_str(&format!("{}[cropped_{}];", layer_filter, idx));
@@ -285,7 +311,10 @@ fn run_reframer_internal(
             let mask_path = parent.join(format!("{}_censor_{}.png", stem, idx));
             if let Ok(bytes) = general_purpose::STANDARD.decode(b64) {
                 let _ = std::fs::write(&mask_path, bytes);
-                dynamic_inputs.push(mask_path.to_string_lossy().to_string());
+                let mask_str = mask_path.to_string_lossy().to_string();
+                dynamic_inputs.push(mask_str.clone());
+                cleanup.paths.push(mask_str);
+
 
                 // Define intermediate labels
                 let pre_split_lbl = format!("presplit_{}", idx);
@@ -360,7 +389,11 @@ fn run_reframer_internal(
     ]);
 
     // Hardware Acceleration or CPU standard based on format
-    let is_webm = ext_clean == "webm";
+    let is_webm = Path::new(&output_path)
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .map(|ext| ext.to_lowercase() == "webm")
+        .unwrap_or(false);
 
     if use_gpu {
         if is_webm {
@@ -434,7 +467,7 @@ fn run_reframer_internal(
                         output_fps,
                         background_mode,
                         false, // fallback to CPU
-                        output_ext,
+                        output_path,
                         on_event,
                     );
                 } else {
@@ -479,9 +512,6 @@ fn run_reframer_internal(
     for line_result in reader.lines() {
         if CANCEL_FLAG.load(Ordering::SeqCst) {
             let _ = child.kill();
-            for path in &dynamic_inputs {
-                let _ = std::fs::remove_file(Path::new(path));
-            }
             let _ = on_event.send(RenderEvent::Error { message: "Cancelled by user.".to_string() });
             return;
         }
@@ -514,12 +544,7 @@ fn run_reframer_internal(
     } else {
         let _ = on_event.send(RenderEvent::Error { message: "FFmpeg reported an error during render.".to_string() });
     }
-
-    // Cleanup temporary mask/censor PNG files
-    for path in &dynamic_inputs {
-        let _ = std::fs::remove_file(Path::new(path));
-    }
-    }
+}
 
 pub fn probe_duration(app_handle: AppHandle, video_path: String) -> f64 {
     let ffmpeg_path = get_ffmpeg_path(&app_handle);
