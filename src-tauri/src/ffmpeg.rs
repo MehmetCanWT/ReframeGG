@@ -272,8 +272,8 @@ fn run_reframer_internal(
                 filter_complex.push_str(&format!("{}[cropped_{}];", layer_filter, idx));
                 // 2. format mask and alphamerge
                 filter_complex.push_str(&format!(
-                    "[{}:v]format=rgba[mask_{}];[cropped_{}][mask_{}]alphamerge[{}];",
-                    current_input_idx, idx,
+                    "[{}:v]format=rgba,scale={}:{}[mask_{}];[cropped_{}][mask_{}]alphamerge[{}];",
+                    current_input_idx, canvas.w, canvas.h, idx,
                     idx, idx,
                     layer_label
                 ));
@@ -304,11 +304,11 @@ fn run_reframer_internal(
                 let blur_val = layer.blur.unwrap_or(0.0);
                 let censor_blur_val = if blur_val > 0.0 { blur_val } else { 20.0 };
                 filter_complex.push_str(&format!("[{}]boxblur={}:3[{}];", to_blur_lbl, censor_blur_val, blurred_lbl));
-                // 4. Merge blurred stream with PNG censor alpha mask
+                // 4. Merge blurred stream with PNG censor alpha mask (scaled to fit)
                 filter_complex.push_str(&format!(
-                    "[{}:v]format=rgba[mask_{}];[{}][mask_{}]alphamerge[{}];",
-                    current_input_idx, idx,
-                    idx, idx,
+                    "[{}:v]format=rgba,scale={}:{}[mask_{}];[{}][mask_{}]alphamerge[{}];",
+                    current_input_idx, canvas.w, canvas.h, idx,
+                    blurred_lbl, idx,
                     censor_lbl
                 ));
                 current_input_idx += 1;
